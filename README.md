@@ -102,6 +102,12 @@ import '@bric/rex-visit-graph/service-worker'
 
 No new permission is required: `chrome.history.onVisited` is covered by `history`.
 
+## Messages
+
+| Message | Response | Purpose |
+|---------|----------|---------|
+| `triggerVisitGraphDrain` | number of hops emitted | Emit stored hops now instead of waiting for the alarm, so a host extension can drain on its own cadence |
+
 ## Module Context Exports
 
 - `./service-worker` - Service worker context
@@ -114,6 +120,7 @@ There is no extension or browser context. The module has no UI and injects nothi
 - **Listeners register at module scope, in the worker script's first turn.** A `chrome.history` or `chrome.alarms` listener added after a top-level `await` is registered too late to wake an evicted MV3 worker. A spec asserts this against the source, because the failure appears only on a cold start in the field.
 - **One storage key per hop.** A single shared array lets concurrent handlers overwrite each other, which presents as the listener never firing.
 - **Emit, then forget.** A worker killed between the two re-emits next cycle; the other order loses the hop. Duplicates are recoverable in analysis, losses are not.
+- **A correctly scheduled drain alarm is left alone.** A host extension may refresh configuration far more often than the drain interval; re-creating the alarm each time restarts its countdown, and a drain scheduled further out than the refresh cadence would never fire.
 - **The in-progress guard is in memory, never persisted**, so a killed worker cannot strand it and wedge every later drain.
 
 ## Tests

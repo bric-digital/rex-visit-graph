@@ -125,6 +125,27 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     }
   }
 
+  /**
+   * `triggerVisitGraphDrain` emits any stored hops now and responds with the
+   * count, so a host extension can drain on its own cadence rather than waiting
+   * for the alarm.
+   */
+  override handleMessage(
+    message: { messageType?: string } | undefined,
+    _sender: unknown,
+    sendResponse: (response: unknown) => void
+  ): boolean {
+    if (message?.messageType !== 'triggerVisitGraphDrain') {
+      return false
+    }
+
+    this.drain()
+      .then((count) => sendResponse(count))
+      .catch(() => sendResponse(0))
+
+    return true
+  }
+
   /** Test seam: a worker restart reconstructs the instance with the guard clear. */
   resetForTest(): void {
     this.draining = false
@@ -135,6 +156,36 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     this.draining = value
   }
 
+  /**
+   * Leave a correctly scheduled alarm alone.
+   *
+   * A host extension may refresh configuration far more often than the drain
+   * interval. Clearing and re-creating the alarm on every refresh restarts its
+   * countdown, so a drain scheduled further out than the refresh cadence would
+   * never fire and hops would accumulate unemitted.
+   */
+  private async scheduleDrain(): Promise<void> {
+    const existing = await chrome.alarms.get(DRAIN_ALARM)
+
+    if (!this.config.enabled) {
+      if (existing !== undefined) {
+        await chrome.alarms.clear(DRAIN_ALARM)
+      }
+
+      return
+    }
+
+    if (existing !== undefined && existing.periodInMinutes === this.config.drain_interval_minutes) {
+      return
+    }
+
+    await chrome.alarms.clear(DRAIN_ALARM)
+    await chrome.alarms.create(DRAIN_ALARM, {
+      periodInMinutes: this.config.drain_interval_minutes,
+      delayInMinutes: this.config.drain_interval_minutes
+    })
+  }
+
   async refreshConfiguration(): Promise<void> {
     try {
       const configuration = await rexCorePlugin.fetchConfiguration() as REXConfiguration | undefined
@@ -143,14 +194,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
       this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
 
-      await chrome.alarms.clear(DRAIN_ALARM)
-
-      if (this.config.enabled) {
-        await chrome.alarms.create(DRAIN_ALARM, {
-          periodInMinutes: this.config.drain_interval_minutes,
-          delayInMinutes: this.config.drain_interval_minutes
-        })
-      }
+      await this.scheduleDrain()
     } catch (error) {
       console.error('[rex-visit-graph] Failed to load configuration:', error)
     }

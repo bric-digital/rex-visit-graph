@@ -298,6 +298,72 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(config.drain_interval_minutes).toBe(5)
   })
 
+  test('repeated configuration refreshes do not postpone the drain', async () => {
+    // A host extension may refresh configuration far more often than the drain
+    // interval — AI-Extension does it every minute against a 15-minute drain. If
+    // each refresh re-created the alarm, its countdown would restart every time
+    // and the drain would never fire, so hops would accumulate and never emit.
+    const times = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({ REXConfiguration: {} })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      const first = (await chrome.alarms.get('rex-visit-graph-drain'))?.scheduledTime
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      await p.refreshConfiguration()
+      const second = (await chrome.alarms.get('rex-visit-graph-drain'))?.scheduledTime
+      return { first, second }
+    })
+
+    expect(times.first).toBeDefined()
+    expect(times.second).toBe(times.first)
+  })
+
+  test('changing the drain interval does reschedule the alarm', async () => {
+    const period = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({
+        REXConfiguration: { visit_graph: { drain_interval_minutes: 3 } }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      return (await chrome.alarms.get('rex-visit-graph-drain'))?.periodInMinutes
+    })
+
+    expect(period).toBe(3)
+  })
+
+  test('triggerVisitGraphDrain emits stored hops and answers with the count', async () => {
+    const result = await serviceWorker.evaluate(async (rules) => {
+      await chrome.storage.local.set({ REXConfiguration: {} })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(self as any).__capturedEvents = []
+
+      const count = await new Promise((resolve) => {
+        p.handleMessage({ messageType: 'triggerVisitGraphDrain' }, null, resolve)
+      })
+
+      return { count, remaining: (await p.hopStore.readAll()).length }
+    }, GOOGLE_RULES)
+
+    expect(result.count).toBe(1)
+    expect(result.remaining).toBe(0)
+  })
+
+  test('an unrelated message is not claimed', async () => {
+    const claimed = await serviceWorker.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      return p.handleMessage({ messageType: 'getIdentifier' }, null, () => {})
+    })
+
+    expect(claimed).toBe(false)
+  })
+
   test('include_url puts the URL on the emitted point', async () => {
     const events = await serviceWorker.evaluate(async (rules) => {
       await chrome.storage.local.set({
