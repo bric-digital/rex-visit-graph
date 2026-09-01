@@ -31,6 +31,7 @@
     },
     "dependencies": {
         "@bric/rex-core": "github:bric-digital/rex-core",
+        "@bric/rex-lists": "github:bric-digital/rex-lists",
         "@bric/rex-types": "github:bric-digital/rex-types",
         "@eslint/js": "^10.0.1",
         "@playwright/test": "^1.61.1",

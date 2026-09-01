@@ -22,6 +22,7 @@ import type { REXConfiguration } from '@bric/rex-core/common'
 import { CaptureRules, type VisitGraphConfig } from './capture-rules.mjs'
 import { VisitLookup } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
+import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
 
 const DRAIN_ALARM = 'rex-visit-graph-drain'
 
@@ -47,6 +48,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   readonly captureRules = new CaptureRules()
   readonly visitLookup = new VisitLookup()
   readonly hopStore = new HopStore()
+  readonly redactor = new UrlRedactor()
 
   private config: VisitGraphConfig = DEFAULT_CONFIG
 
@@ -94,6 +96,8 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       const emitted: string[] = []
 
       for (const record of records) {
+        const url = this.config.include_url ? await this.redactor.redact(record.url) : undefined
+
         dispatchEvent({
           name: 'rex-visit-graph-hop',
           visit_id: record.visit_id,
@@ -101,7 +105,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           visit_time: record.visit_time,
           capture_rule: record.capture_rule,
           date: record.visit_time,
-          ...(this.config.include_url ? { url: record.url } : {})
+          ...(url === undefined ? {} : { url })
         })
 
         emitted.push(record.visit_id)
@@ -193,6 +197,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
       this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
       this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
+
+      const history = (configuration as Record<string, unknown> | undefined)?.['history'] as RedactionLists | undefined
+      this.redactor.update(resolveRedactionLists(history, this.config.redaction))
 
       await this.scheduleDrain()
     } catch (error) {

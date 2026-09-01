@@ -7,6 +7,8 @@
  * is a denial-of-service surface in a service worker.
  */
 
+import type { RedactionLists } from './redaction.mjs'
+
 export interface CaptureRule {
   /** Stable label emitted with each hop so analysts can tell rules apart. */
   id: string;
@@ -22,6 +24,8 @@ export interface VisitGraphConfig {
   include_url: boolean;
   drain_interval_minutes: number;
   max_hop_age_days: number;
+  /** Used only when rex-history states no lists of its own. */
+  redaction?: RedactionLists;
 }
 
 export class CaptureRules {

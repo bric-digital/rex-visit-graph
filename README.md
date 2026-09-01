@@ -27,7 +27,8 @@ This module reads from the `visit_graph` section of the backend config. Every fi
 |-------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `true` | Enable/disable capture |
 | `capture_rules` | array | No | Google `/aclk`, `/goto`, `/url` | Which visits to keep; see below |
-| `include_url` | boolean | No | `false` | Emit the captured URL as well as the ids |
+| `include_url` | boolean | No | `false` | Emit the captured URL as well as the ids; see Redaction below |
+| `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
 | `drain_interval_minutes` | number | No | `15` | How often stored hops are emitted (Chrome clamps to 1 minute) |
 | `max_hop_age_days` | number | No | `7` | Age after which an un-emitted hop is discarded |
 
@@ -41,7 +42,24 @@ Each entry in `capture_rules` is an object:
 
 Rules are server-side because the paths change: `/goto` and `/aclk` were both observed in one day, and a build shipping only one of them would have captured nothing.
 
-`include_url` is **not yet safe to enable.** The open question is which URL to emit and what to redact it against: a Google hop's own host is `google.com`, but the part that matters is the destination encoded inside it, so redacting the hop as written checks the wrong thing.
+### Redaction, when `include_url` is on
+
+With ids alone there is nothing to redact, which is why the module needs no lists by default. Turning `include_url` on brings the captured URL into the emitted point, and it is redacted first.
+
+**Settings resolve to rex-history's if it states any**, so a study that has already decided what may be recorded does not state it twice and the two modules cannot disagree. `visit_graph.redaction` applies only when rex-history states nothing, which is the case for a study running this module without rex-history.
+
+Rules and precedence match rex-history exactly, and the branches are exclusive:
+
+| Order | Condition | Recorded as |
+|-------|-----------|-------------|
+| 1 | matches a `domain_only_lists` entry | `DOMAIN ONLY` |
+| 2 | `allow_lists` configured and nothing matches | `CATEGORY:NOT_ON_ALLOWLIST` |
+| 3 | matches a `filter_lists` entry | `CATEGORY:<category>` |
+| 4 | otherwise | the URL, unchanged |
+
+List **contents** are not synced here. Matching reads whatever rex-lists holds in IndexedDB, populated by whichever module owns the sync. An empty database means a configured allow-list matches nothing and everything redacts, so the failure direction is closed rather than open.
+
+One caveat to weigh before enabling it: a Google hop's own host is `google.com`, so these rules ask whether Google is allowed, not whether the destination is. The `?url=…` blob encodes where the click went, so a destination that rex-history redacted can still be reconstructed from an emitted hop URL. Redacting the destination itself would mean decoding that blob, which is undocumented and changes without notice.
 
 ### Example
 

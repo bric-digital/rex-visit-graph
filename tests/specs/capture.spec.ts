@@ -416,6 +416,89 @@ test.describe('rex-visit-graph — real extension', () => {
   })
 
   // -------------------------------------------------------------------------
+  // Redaction (include_url only)
+  // -------------------------------------------------------------------------
+
+  test("rex-history's lists win when it states any", async () => {
+    const lists = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({
+        REXConfiguration: {
+          history: { allow_lists: ['history-allow'], filter_lists: [], domain_only_lists: [] },
+          visit_graph: { redaction: { allow_lists: ['our-own'] } }
+        }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      return p.redactor.configuredLists()
+    })
+
+    expect(lists.allow_lists).toEqual(['history-allow'])
+  })
+
+  test('our own lists apply only when rex-history states none', async () => {
+    const lists = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({
+        REXConfiguration: {
+          history: { allow_lists: [], filter_lists: [], domain_only_lists: [] },
+          visit_graph: { redaction: { allow_lists: ['our-own'] } }
+        }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      return p.redactor.configuredLists()
+    })
+
+    expect(lists.allow_lists).toEqual(['our-own'])
+  })
+
+  test('a URL off a configured allow-list is redacted before it is emitted', async () => {
+    const events = await serviceWorker.evaluate(async (rules) => {
+      await chrome.storage.local.set({
+        REXConfiguration: {
+          history: { allow_lists: ['nonempty-list'], filter_lists: [], domain_only_lists: [] },
+          visit_graph: { capture_rules: rules, include_url: true }
+        }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(self as any).__capturedEvents = []
+      await p.drain()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (self as any).__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-hop')
+    }, GOOGLE_RULES)
+
+    // The list is empty in IndexedDB, so nothing matches it. An allow-list that
+    // matches nothing must redact rather than pass the URL through.
+    expect(events).toHaveLength(1)
+    expect(events[0].url).toBe('CATEGORY:NOT_ON_ALLOWLIST')
+    expect(events[0].visit_id).toBe('5')
+  })
+
+  test('with no lists anywhere, include_url emits the URL unchanged', async () => {
+    const events = await serviceWorker.evaluate(async (rules) => {
+      await chrome.storage.local.set({
+        REXConfiguration: { visit_graph: { capture_rules: rules, include_url: true } }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(self as any).__capturedEvents = []
+      await p.drain()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (self as any).__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-hop')
+    }, GOOGLE_RULES)
+
+    expect(events[0].url).toBe('https://www.google.com/goto?url=CAES')
+  })
+
+  // -------------------------------------------------------------------------
   // Listener registration
   // -------------------------------------------------------------------------
 
