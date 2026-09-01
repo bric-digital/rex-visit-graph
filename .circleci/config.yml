@@ -1,0 +1,25 @@
+version: 2.1
+orbs:
+  node: circleci/node@7.2.1
+
+jobs:
+  build:
+    docker:
+      - image: cimg/node:24.11.0-browsers
+    executor: node/default
+    steps:
+      - checkout
+      - node/install-packages:
+          pkg-manager: npm
+      - run:
+          name: Build code
+          command: npm run build
+      - run:
+          name: Lint code
+          command: npm run lint
+      - run:
+          name: Test code
+          command: npx playwright install chromium && npm run pretest && npm run test:ci
+      - store_artifacts:
+          path: test-results
+          destination: test-results
