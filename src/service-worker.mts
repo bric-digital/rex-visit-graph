@@ -85,7 +85,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   }
 
   async drain(): Promise<number> {
-    if (this.draining) {
+    // A host drains on its own cadence, so being switched off has to stop
+    // emission here rather than only stopping the alarm being scheduled.
+    if (!this.config.enabled || this.draining) {
       return 0
     }
 
@@ -197,6 +199,17 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
       this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
       this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
+
+      // Capture is seeded with the defaults before configuration arrives, so a
+      // disabled arm can still have captured during that window. Discard it
+      // rather than hold it against a later re-enable.
+      if (!this.config.enabled) {
+        const discarded = await this.hopStore.clear()
+
+        if (discarded > 0) {
+          console.log(`[rex-visit-graph] Disabled; discarded ${discarded} hop(s) captured before configuration.`)
+        }
+      }
 
       const history = (configuration as Record<string, unknown> | undefined)?.['history'] as RedactionLists | undefined
       this.redactor.update(resolveRedactionLists(history, this.config.redaction))

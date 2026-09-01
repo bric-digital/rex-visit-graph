@@ -415,6 +415,76 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(stored).toHaveLength(0)
   })
 
+  test('a disabled module emits nothing, including hops captured before config arrived', async () => {
+    // Capture rules are seeded with the defaults before configuration loads, so a
+    // cold worker does not miss hops. On an arm where the module is disabled that
+    // window can still capture, and the host calls triggerVisitGraphDrain on its
+    // own cadence — so "disabled" has to mean nothing is emitted, not merely that
+    // the drain alarm is never scheduled.
+    const result = await serviceWorker.evaluate(async (rules) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, 'https://www.google.com/goto?url=CAES', rules[0])
+
+      await chrome.storage.local.set({
+        REXConfiguration: { visit_graph: { enabled: false, capture_rules: rules } }
+      })
+      await p.refreshConfiguration()
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(self as any).__capturedEvents = []
+      const viaMessage = await new Promise((resolve) => {
+        p.handleMessage({ messageType: 'triggerVisitGraphDrain' }, null, resolve)
+      })
+      const viaAlarm = await p.drain()
+
+      return {
+        viaMessage,
+        viaAlarm,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        emitted: (self as any).__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-hop').length,
+        stillStored: (await p.hopStore.readAll()).length,
+        alarm: await chrome.alarms.get('rex-visit-graph-drain'),
+      }
+    }, GOOGLE_RULES)
+
+    expect(result.emitted).toBe(0)
+    expect(result.viaMessage).toBe(0)
+    expect(result.viaAlarm).toBe(0)
+    expect(result.alarm).toBeUndefined()
+    // Nothing captured while disabled may sit waiting for a later re-enable.
+    expect(result.stillStored).toBe(0)
+  })
+
+  test('a disabled module refuses to drain a hop that arrives after it was turned off', async () => {
+    // Isolates the drain guard from the purge. The purge empties the store at
+    // configuration time; this covers a hop reaching the store afterwards, which
+    // the guard is the only thing standing in front of.
+    const result = await serviceWorker.evaluate(async (rules) => {
+      await chrome.storage.local.set({
+        REXConfiguration: { visit_graph: { enabled: false, capture_rules: rules } }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, 'https://www.google.com/goto?url=CAES', rules[0])
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(self as any).__capturedEvents = []
+      const drained = await p.drain()
+
+      return {
+        drained,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        emitted: (self as any).__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-hop').length,
+      }
+    }, GOOGLE_RULES)
+
+    expect(result.drained).toBe(0)
+    expect(result.emitted).toBe(0)
+  })
+
   // -------------------------------------------------------------------------
   // Redaction (include_url only)
   // -------------------------------------------------------------------------

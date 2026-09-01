@@ -54,6 +54,17 @@ export class HopStore {
     await chrome.storage.local.remove(visitIds.map((visitId) => this.keyFor(visitId)))
   }
 
+  /** Discard everything held. Used when the module is turned off. */
+  async clear(): Promise<number> {
+    const records = await this.readAll()
+
+    if (records.length > 0) {
+      await this.forget(records.map((record) => record.visit_id))
+    }
+
+    return records.length
+  }
+
   /** Drop anything older than the cutoff, so a wedged run cannot grow the store. */
   async sweep(olderThan: number): Promise<number> {
     const stale = (await this.readAll()).filter((record) => record.visit_time < olderThan)

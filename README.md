@@ -25,7 +25,7 @@ This module reads from the `visit_graph` section of the backend config. Every fi
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `enabled` | boolean | No | `true` | Enable/disable capture |
+| `enabled` | boolean | No | `true` | Enable/disable the module; see below |
 | `capture_rules` | array | No | Google `/aclk`, `/goto`, `/url` | Which visits to keep; see below |
 | `include_url` | boolean | No | `false` | Emit the captured URL as well as the ids; see Redaction below |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
@@ -138,6 +138,7 @@ There is no extension or browser context. The module has no UI and injects nothi
 - **Listeners register at module scope, in the worker script's first turn.** A `chrome.history` or `chrome.alarms` listener added after a top-level `await` is registered too late to wake an evicted MV3 worker. A spec asserts this against the source, because the failure appears only on a cold start in the field.
 - **One storage key per hop.** A single shared array lets concurrent handlers overwrite each other, which presents as the listener never firing.
 - **Emit, then forget.** A worker killed between the two re-emits next cycle; the other order loses the hop. Duplicates are recoverable in analysis, losses are not.
+- **`enabled: false` stops everything, not just capture.** No rules match, no drain alarm is scheduled, `drain()` refuses even when a host calls `triggerVisitGraphDrain` on its own cadence, and anything captured in the window before configuration arrived is discarded rather than held against a later re-enable.
 - **A correctly scheduled drain alarm is left alone.** A host extension may refresh configuration far more often than the drain interval; re-creating the alarm each time restarts its countdown, and a drain scheduled further out than the refresh cadence would never fire.
 - **The in-progress guard is in memory, never persisted**, so a killed worker cannot strand it and wedge every later drain.
 
