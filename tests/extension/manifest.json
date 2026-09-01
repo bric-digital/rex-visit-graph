@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "rex-visit-graph Test Extension",
+  "version": "0.0.1",
+  "description": "Minimal Chrome extension used by Playwright tests. Loads only the rex-visit-graph service worker module.",
+  "permissions": ["alarms", "history", "storage"],
+  "background": {
+    "service_worker": "service-worker.bundle.js",
+    "type": "module"
+  }
+}

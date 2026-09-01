@@ -1,0 +1,49 @@
+{
+    "name": "@bric/rex-visit-graph",
+    "version": "0.0.1",
+    "description": "REX module that captures the browser visits chrome.history.search() omits, so referrer chains resolve.",
+    "keywords": [
+        "extension",
+        "rex",
+        "history",
+        "referrer"
+    ],
+    "author": "Behavioral Research Innovation Center",
+    "type": "module",
+    "homepage": "https://github.com/bric-digital/rex-visit-graph",
+    "bugs": {
+        "url": "https://github.com/bric-digital/rex-visit-graph/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/bric-digital/rex-visit-graph.git"
+    },
+    "exports": {
+        "./service-worker": "./src/service-worker.mts"
+    },
+    "scripts": {
+        "build": "tsc",
+        "lint": "eslint src",
+        "pretest": "node tests/scripts/build-test-bundle.js",
+        "test": "playwright test",
+        "test:ci": "playwright test --reporter=dot",
+        "test:headed": "playwright test --headed"
+    },
+    "dependencies": {
+        "@bric/rex-core": "github:bric-digital/rex-core",
+        "@bric/rex-types": "github:bric-digital/rex-types",
+        "@eslint/js": "^10.0.1",
+        "@playwright/test": "^1.61.1",
+        "@types/node": "^25.6.0",
+        "chrome-types": "^0.1.436",
+        "esbuild": "^0.28.1",
+        "eslint": "^10.8.0",
+        "globals": "^17.7.0",
+        "jiti": "^2.7.0",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.65.0"
+    },
+    "allowScripts": {
+        "esbuild@0.28.2": true
+    }
+}
