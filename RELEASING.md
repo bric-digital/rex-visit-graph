@@ -33,11 +33,22 @@ The version in `package.json` is the source of truth.
    The script refuses unless `package.json` already says `1.0.0`, then creates an annotated tag `v1.0.0` and bumps `package.json` to `1.0.1-dev`, committing that as "start v1.0.1-dev development".
 
    The `-dev` suffix matters. A bare `1.0.1` sitting on `main` between releases claims to be a release nobody cut, and anyone reading the repo believes it. `1.0.1-dev` says exactly what is true: past 1.0.0, not yet 1.0.1.
-4. Push the branch and the tag together:
+4. Push the branch, then the tag:
 
    ```
-   git push origin main --follow-tags
+   git push origin main
+   git push origin refs/tags/v1.0.0
    ```
+
+   Push the tag by its ref. `--follow-tags` pushes only tags the remote does not already have, so it will silently skip a tag that is being moved — and report success while doing it.
+
+5. Cut the GitHub Release, so the version shows on the repo's home page rather than living only as a tag:
+
+   ```
+   gh release create v1.0.0 --title "v1.0.0" --notes-file <notes.md> --latest
+   ```
+
+   A tag is what consumers pin; a Release is what a person browsing the repo sees. Notes should say what changed and what a consumer has to do about it.
 
 ## Then update consumers
 
@@ -75,4 +86,4 @@ Ordinary semver, read from the perspective of an extension that installs this mo
 
 ## No published artifact
 
-There is nothing to zip or upload. Unlike a client extension, the tag alone is the release, because npm resolves the GitHub ref directly. That is why this repo has no publish job in CI.
+There is nothing to zip or upload. Unlike a client extension, npm resolves the GitHub ref directly, so the tag is what installs. The GitHub Release carries notes and makes the version visible on the home page; it holds no files, which is why this repo has no publish job in CI.
