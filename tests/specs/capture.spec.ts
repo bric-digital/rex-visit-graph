@@ -199,7 +199,7 @@ test.describe('rex-visit-graph — real extension', () => {
 
   test('does not hold the URL when it will not be emitted', async () => {
     const stored = await serviceWorker.evaluate(async () => {
-      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { include_url: false } } })
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { url_detail: 'none' } } })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       await p.refreshConfiguration()
@@ -309,8 +309,9 @@ test.describe('rex-visit-graph — real extension', () => {
     const result = await serviceWorker.evaluate(async (rules) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
-      await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: 2000 }, 'https://www.google.com/goto?url=CAET', rules[0])
+      // url_detail defaults to 'none', so capture stores no address at all.
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, null, rules[0])
+      await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: 2000 }, null, rules[0])
 
       const count = await p.drain()
       const remaining = await p.hopStore.readAll()
@@ -384,7 +385,8 @@ test.describe('rex-visit-graph — real extension', () => {
     })
 
     expect(config.enabled).toBe(true)
-    expect(config.include_url).toBe(false)
+    expect(config.url_detail).toBe('none')
+    expect(config.debug).toBe(false)
     // No rules by default: capture the whole graph, let a study narrow it. Naming
     // sites here would make the module's default a client override, and would
     // leave any redirector nobody has seen yet silently uncollected.
@@ -398,7 +400,7 @@ test.describe('rex-visit-graph — real extension', () => {
           visit_graph: {
             enabled: true,
             capture_rules: [{ id: 'example', host_suffix: 'example.com', path_prefix: '/r' }],
-            include_url: false,
+            url_detail: 'none',
             drain_interval_minutes: 5,
             max_hop_age_days: 3
           }
@@ -481,14 +483,14 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(claimed).toBe(false)
   })
 
-  test('include_url puts the URL on the emitted point', async () => {
+  test("url_detail 'full' puts the whole address on the emitted point", async () => {
     const events = await serviceWorker.evaluate(async (rules) => {
       await chrome.storage.local.set({
         REXConfiguration: {
           visit_graph: {
             enabled: true,
             capture_rules: rules,
-            include_url: true,
+            url_detail: 'full',
             drain_interval_minutes: 15,
             max_hop_age_days: 7
           }
@@ -516,7 +518,7 @@ test.describe('rex-visit-graph — real extension', () => {
           visit_graph: {
             enabled: false,
             capture_rules: rules,
-            include_url: false,
+            url_detail: 'none',
             drain_interval_minutes: 15,
             max_hop_age_days: 7
           }
@@ -645,7 +647,7 @@ test.describe('rex-visit-graph — real extension', () => {
       await chrome.storage.local.set({
         REXConfiguration: {
           history: { allow_lists: ['nonempty-list'], filter_lists: [], domain_only_lists: [] },
-          visit_graph: { capture_rules: rules, include_url: true }
+          visit_graph: { capture_rules: rules, url_detail: 'full' }
         }
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -666,10 +668,10 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(events[0].visit_id).toBe('5')
   })
 
-  test('with no lists anywhere, include_url emits the URL unchanged', async () => {
+  test('with no lists anywhere, a kept address is emitted unchanged', async () => {
     const events = await serviceWorker.evaluate(async (rules) => {
       await chrome.storage.local.set({
-        REXConfiguration: { visit_graph: { capture_rules: rules, include_url: true } }
+        REXConfiguration: { visit_graph: { capture_rules: rules, url_detail: 'full' } }
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
@@ -714,6 +716,56 @@ test.describe('rex-visit-graph — real extension', () => {
     })
 
     expect(inUse.filter((key: string) => !described.includes(key))).toEqual([])
+  })
+
+  test("url_detail 'path' keeps what the intermediate was, not where it pointed", async () => {
+    const result = await serviceWorker.evaluate(async (rules) => {
+      await chrome.storage.local.set({
+        REXConfiguration: { visit_graph: { capture_rules: rules, url_detail: 'path' } }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+
+      const real = chrome.history.getVisits
+      chrome.history.getVisits = async () => ([
+        { id: '1', visitId: '5', referringVisitId: '4', visitTime: 1000, transition: 'link', isLocal: true }
+      ]) as never
+      try {
+        await p.captureVisit({ id: '1', url: 'https://www.google.com/goto?url=CAESqgEB6zswFTni' })
+      } finally {
+        chrome.history.getVisits = real
+      }
+
+      const stored = await p.hopStore.readAll()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(self as any).__capturedEvents = []
+      await p.drain()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const events = (self as any).__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-hop')
+      return { stored: stored[0].url, emitted: events[0].url }
+    }, GOOGLE_RULES)
+
+    // Says it was a /goto rather than an /aclk; carries none of the encoded
+    // destination the redirector puts in its query.
+    expect(result.emitted).toBe('https://www.google.com/goto')
+    // And the query is never held, not merely not emitted.
+    expect(result.stored).toBe('https://www.google.com/goto')
+  })
+
+  test('debug forces full addresses in any build, and says so', async () => {
+    const result = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({
+        REXConfiguration: { visit_graph: { url_detail: 'none', debug: true } }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      return { detail: p.urlDetail(), configured: p.currentConfig().url_detail }
+    })
+
+    expect(result.configured).toBe('none')
+    expect(result.detail).toBe('full')
   })
 
   // -------------------------------------------------------------------------

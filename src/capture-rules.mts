@@ -29,7 +29,18 @@ export interface VisitGraphConfig {
   capture_rules: CaptureRule[];
   /** Capture visits whose scheme is not http(s). Off by default. */
   include_all_schemes: boolean;
-  include_url: boolean;
+  /**
+   * How much of the captured address to keep and emit.
+   *
+   * `none`  — ids only. The address is discarded once the visit ids are resolved.
+   * `path`  — origin and pathname, no query. Identifies what the intermediate
+   *           WAS (`google.com/goto` vs `google.com/aclk`) without carrying the
+   *           encoded destination a redirector puts in its query string.
+   * `full`  — the whole address.
+   */
+  url_detail: UrlDetail;
+  /** Forces `url_detail` to `full` in any build, for diagnosing a deployment. */
+  debug: boolean;
   drain_interval_minutes: number;
   max_hop_age_days: number;
   /** Used only when rex-history states no lists of its own. */
@@ -37,6 +48,26 @@ export interface VisitGraphConfig {
 }
 
 /** Stands in for "no narrowing configured", so every emitted hop names a rule. */
+export type UrlDetail = 'none' | 'path' | 'full'
+
+/** Reduce an address to origin plus pathname, dropping query and fragment. */
+export function urlAtDetail(url: string, detail: UrlDetail): string | null {
+  if (detail === 'none') {
+    return null
+  }
+
+  if (detail === 'full') {
+    return url
+  }
+
+  try {
+    const parsed = new URL(url)
+    return `${parsed.origin}${parsed.pathname}`
+  } catch {
+    return null
+  }
+}
+
 export const CAPTURE_ALL: CaptureRule = { id: 'all', host_suffix: '*', path_prefix: '' }
 
 export class CaptureRules {

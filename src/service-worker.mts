@@ -19,7 +19,7 @@
 
 import rexCorePlugin, { REXServiceWorkerModule, registerREXModule, dispatchEvent } from '@bric/rex-core/service-worker'
 import type { REXConfiguration } from '@bric/rex-core/common'
-import { CaptureRules, type VisitGraphConfig } from './capture-rules.mjs'
+import { CaptureRules, urlAtDetail, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
 import { VisitLookup } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
@@ -36,7 +36,8 @@ const DEFAULT_CONFIG: VisitGraphConfig = {
   enabled: true,
   capture_rules: [],
   include_all_schemes: false,
-  include_url: false,
+  url_detail: 'none',
+  debug: false,
   drain_interval_minutes: 15,
   max_hop_age_days: 7
 }
@@ -74,9 +75,13 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         include_all_schemes: 'Boolean, true to capture visits outside http and https '
           + '(chrome://, file://, extension pages). False by default: those are not ordinary '
           + 'browsing, and a local file path is a different kind of disclosure from a web page.',
-        include_url: 'Boolean, true to emit the captured URL alongside the visit ids. Redacted first, '
-          + "using rex-history's lists when it states any, otherwise visit_graph.redaction. When false the "
-          + 'address is discarded as soon as the visit ids are resolved and is never stored.',
+        url_detail: "String: 'none' (default), 'path' or 'full'. 'none' keeps ids only and discards the "
+          + "address as soon as the visit ids are resolved. 'path' keeps origin and pathname, which says what "
+          + "an intermediate was without the destination a redirector encodes in its query. 'full' keeps the "
+          + "whole address. Anything kept is redacted before it is emitted, using rex-history's lists when it "
+          + 'states any, otherwise visit_graph.redaction.',
+        debug: 'Boolean, forces url_detail to full in any build, for diagnosing a deployment. Logs a '
+          + 'warning while it is on so a configuration left in this state is visible.',
         drain_interval_minutes: 'Number, minutes between emitting stored hops. Chrome clamps alarms to a '
           + 'one minute minimum.',
         max_hop_age_days: 'Number, days after which a hop that was never emitted is discarded.',
@@ -110,9 +115,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       return false
     }
 
-    // The URL has done its job once the ids are resolved. Keep it only if it is
-    // going to be emitted.
-    await this.hopStore.record(visit, this.config.include_url ? item.url : null, rule)
+    // Store at the granularity that will be emitted, so the module never holds
+    // more of an address than it is configured to send. The address has done its
+    // job once the ids are resolved.
+    await this.hopStore.record(visit, urlAtDetail(item.url, this.urlDetail()), rule)
     return true
   }
 
@@ -130,9 +136,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       const emitted: string[] = []
 
       for (const record of records) {
-        const url = this.config.include_url && record.url !== null
-          ? await this.redactor.redact(record.url)
-          : undefined
+        const url = record.url === null ? undefined : await this.redactor.redact(record.url)
 
         dispatchEvent({
           name: 'rex-visit-graph-hop',
@@ -184,6 +188,25 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       .catch(() => sendResponse(0))
 
     return true
+  }
+
+  /**
+   * The detail actually in force.
+   *
+   * `debug` overrides `url_detail` in any build, deliberately: diagnosing a real
+   * deployment is exactly when full addresses are needed, so a flag that only
+   * worked in a development build would be useless where it matters. It announces
+   * itself in the log so a config left in this state is visible rather than
+   * silent.
+   */
+  urlDetail(): UrlDetail {
+    if (this.config.debug === true) {
+      console.warn('[rex-visit-graph] visit_graph.debug is on: emitting full addresses, '
+        + `overriding url_detail="${this.config.url_detail ?? 'none'}".`)
+      return 'full'
+    }
+
+    return this.config.url_detail ?? 'none'
   }
 
   /** Test seam: a worker restart reconstructs the instance with the guard clear. */

@@ -60,6 +60,8 @@ Ordinary semver, read from the perspective of an extension that installs this mo
 
 The 1.0.0 line is drawn where capture inverted from "rules enable" to "rules narrow". Anything before it was pre-release, so 1.0.0 is the first version worth pinning.
 
+2.0.0 replaces the boolean `include_url` with `url_detail` (`none` / `path` / `full`) and adds `debug`. A consumer setting `include_url` gets the default instead of what it asked for, which is why this is a major rather than a minor.
+
 ## No published artifact
 
 There is nothing to zip or upload. Unlike a client extension, the tag alone is the release, because npm resolves the GitHub ref directly. That is why this repo has no publish job in CI.

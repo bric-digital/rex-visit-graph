@@ -36,7 +36,7 @@ Four small files, each with one job. The whole module is about 300 lines.
 2. **Is it interesting?** `CaptureRules.match()` compares the URL against the configured rules. Host must match exactly or be a true subdomain; path must start with the prefix. No match, nothing happens — the overwhelmingly common case.
 3. **Resolve its ids.** The `HistoryItem` `onVisited` provides carries *no* visit id and no referrer, so `VisitLookup.newestVisit()` calls `chrome.history.getVisits({url})` and takes the newest visit. This is the step that yields `visitId` and `referringVisitId`.
 4. **Store it.** `HopStore.record()` writes one record under `rexVisitGraphHop:<visitId>`. Nothing is emitted yet: points must not be dispatched before configuration exists, and the visit may have happened before configuration loaded.
-5. **Drain.** On its alarm, or when a host sends `triggerVisitGraphDrain`, the module reads every stored hop, dispatches one `rex-visit-graph-hop` point each, then deletes them. If `include_url` is on, the URL is redacted first.
+5. **Drain.** On its alarm, or when a host sends `triggerVisitGraphDrain`, the module reads every stored hop, dispatches one `rex-visit-graph-hop` point each, then deletes them. Any address kept under `url_detail` is redacted first.
 6. **Analysis joins.** The landing page's `referring_visit_id` now names a row that exists, and that row's own referrer reaches the SERP.
 
 ### Why capture and emission are separated
@@ -62,7 +62,8 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 | `enabled` | boolean | No | `true` | Enable/disable the module; see below |
 | `capture_rules` | array | No | `[]` (capture everything) | Optional narrowing filter; see below |
 | `include_all_schemes` | boolean | No | `false` | Capture visits outside http(s) — `chrome://`, `file://`, extension pages |
-| `include_url` | boolean | No | `false` | Emit the captured URL as well as the ids; see Redaction below |
+| `url_detail` | string | No | `"none"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
+| `debug` | boolean | No | `false` | Forces `url_detail` to `"full"` in any build, for diagnosing a deployment |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
 | `drain_interval_minutes` | number | No | `15` | How often stored hops are emitted (Chrome clamps to 1 minute) |
 | `max_hop_age_days` | number | No | `7` | Age after which an un-emitted hop is discarded |
@@ -77,9 +78,23 @@ Each entry in `capture_rules` is an object:
 
 Rules are a narrowing filter and are server-side because a study's appetite changes without a Web Store release. Leaving them empty is the safe choice: it cannot miss a redirector. Stating them reduces volume at the cost of only capturing what you named — and the paths do change, so a rule list is a maintenance commitment. `/goto` and `/aclk` were both observed on Google within one day.
 
-### Redaction, when `include_url` is on
+### Address detail
 
-With ids alone there is nothing to redact, which is why the module needs no lists by default. Turning `include_url` on brings the captured URL into the emitted point, and it is redacted first.
+`url_detail` decides how much of a captured address the module keeps. Whatever it keeps is what it stores: the module never holds more of an address than it is configured to emit.
+
+| Value | Kept and emitted | Answers |
+|-------|------------------|---------|
+| `"none"` (default) | nothing; the address is discarded once the visit ids are resolved | where the path went, via the join to rex-history |
+| `"path"` | origin and pathname, no query | **what the intermediate was** — `google.com/goto` versus `google.com/aclk`, an organic click versus an ad — without the destination a redirector encodes in its query |
+| `"full"` | the whole address | everything, including that encoded destination |
+
+`"path"` exists because ids alone cannot say what kind of transition a hop was. Under narrowed capture the `capture_rule` field answers that; capturing the whole graph, every hop is `all` and the character of the transition is lost. `"path"` restores it at a fraction of the cost of `"full"`.
+
+`debug: true` forces `"full"` in **any** build, because diagnosing a real deployment is exactly when full addresses are needed. It logs a warning while it is on, so a configuration left in that state is visible rather than silent.
+
+### Redaction, when an address is kept
+
+With ids alone there is nothing to redact, which is why the module needs no lists at its default setting. Any address it does keep is redacted before it is emitted.
 
 **Settings resolve to rex-history's if it states any**, so a study that has already decided what may be recorded does not state it twice and the two modules cannot disagree. `visit_graph.redaction` applies only when rex-history states nothing, which is the case for a study running this module without rex-history.
 
@@ -108,7 +123,8 @@ One caveat to weigh before enabling it: a Google hop's own host is `google.com`,
       { "id": "google-url", "host_suffix": "google.com", "path_prefix": "/url" }
     ],
     "include_all_schemes": false,
-    "include_url": false,
+    "url_detail": "none",
+    "debug": false,
     "drain_interval_minutes": 15,
     "max_hop_age_days": 7
   }
