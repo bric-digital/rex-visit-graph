@@ -568,6 +568,37 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(events[0].url).toBe('https://www.google.com/goto?url=CAES')
   })
 
+  test('describes its own configuration surface', async () => {
+    const details = await serviceWorker.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (self as any).rexVisitGraphPlugin.configurationDetails()
+    })
+
+    // Keyed by the config section it reads, matching rex-page-manipulation.
+    expect(Object.keys(details)).toEqual(['visit_graph'])
+    expect(Object.keys(details.visit_graph.capture_rules[0]).sort()).toEqual(
+      ['host_suffix', 'id', 'path_prefix']
+    )
+  })
+
+  test('describes every setting it actually reads', async () => {
+    // Compared against the live config rather than a hardcoded list, so adding a
+    // setting without describing it fails here instead of silently shipping a
+    // config surface only the source reveals.
+    const { described, inUse } = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({ REXConfiguration: {} })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      return {
+        described: Object.keys(p.configurationDetails().visit_graph).sort(),
+        inUse: Object.keys(p.currentConfig()).sort(),
+      }
+    })
+
+    expect(inUse.filter((key: string) => !described.includes(key))).toEqual([])
+  })
+
   // -------------------------------------------------------------------------
   // Listener registration
   // -------------------------------------------------------------------------

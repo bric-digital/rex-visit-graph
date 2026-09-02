@@ -59,6 +59,35 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     return 'VisitGraph'
   }
 
+  /**
+   * Self-describes the config surface, the way rex-page-manipulation does, so the
+   * shape is discoverable from the module rather than only from its README.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  override configurationDetails(): any {
+    return {
+      visit_graph: {
+        enabled: 'Boolean, true if module is active, false otherwise. When false nothing is captured, '
+          + 'nothing is emitted even if a host asks, and anything already captured is discarded.',
+        capture_rules: [{
+          id: 'String, label emitted with each captured hop so rules can be told apart in analysis.',
+          host_suffix: 'String, matches this host exactly or any subdomain of it.',
+          path_prefix: 'String, matches when the visited path starts with this.'
+        }],
+        include_url: 'Boolean, true to emit the captured URL alongside the visit ids. Redacted first, '
+          + "using rex-history's lists when it states any, otherwise visit_graph.redaction.",
+        drain_interval_minutes: 'Number, minutes between emitting stored hops. Chrome clamps alarms to a '
+          + 'one minute minimum.',
+        max_hop_age_days: 'Number, days after which a hop that was never emitted is discarded.',
+        redaction: {
+          allow_lists: ['String, rex-lists list name. Applied only when rex-history states no lists.'],
+          filter_lists: ['String, rex-lists list name. Applied only when rex-history states no lists.'],
+          domain_only_lists: ['String, rex-lists list name. Applied only when rex-history states no lists.']
+        }
+      }
+    }
+  }
+
   currentConfig(): VisitGraphConfig {
     return this.config
   }

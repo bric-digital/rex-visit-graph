@@ -17,9 +17,41 @@ Analysis joins on `visit_id`: the landing page's `referring_visit_id` resolves t
 
 Measured against Google on 2026-09-01: twelve organic results across four queries all routed through `google.com/goto`, and none of the twelve click-throughs could be tied back to its search in the uploaded data. A Google ad click routed through `google.com/aclk` with the same result.
 
+## How it works
+
+Four small files, each with one job. The whole module is about 300 lines.
+
+| File | Responsibility |
+|------|----------------|
+| `capture-rules.mts` | Decides whether a visited URL is one we want. Pure logic, no Chrome APIs. |
+| `visit-lookup.mts` | Turns a URL into its visit ids via `chrome.history.getVisits()`. |
+| `hop-store.mts` | Holds captured hops in `chrome.storage.local` until they can be emitted. |
+| `service-worker.mts` | The REX module itself: listeners, configuration, drain, message handling. |
+
+### The path a hop takes
+
+1. **A visit happens.** `chrome.history.onVisited` fires for *every* visit, including the redirect intermediates `search()` hides. The listener is registered at module scope (see Design notes) and does nothing but hand the item to the module.
+2. **Is it interesting?** `CaptureRules.match()` compares the URL against the configured rules. Host must match exactly or be a true subdomain; path must start with the prefix. No match, nothing happens — the overwhelmingly common case.
+3. **Resolve its ids.** The `HistoryItem` `onVisited` provides carries *no* visit id and no referrer, so `VisitLookup.newestVisit()` calls `chrome.history.getVisits({url})` and takes the newest visit. This is the step that yields `visitId` and `referringVisitId`.
+4. **Store it.** `HopStore.record()` writes one record under `rexVisitGraphHop:<visitId>`. Nothing is emitted yet: points must not be dispatched before configuration exists, and the visit may have happened before configuration loaded.
+5. **Drain.** On its alarm, or when a host sends `triggerVisitGraphDrain`, the module reads every stored hop, dispatches one `rex-visit-graph-hop` point each, then deletes them. If `include_url` is on, the URL is redacted first.
+6. **Analysis joins.** The landing page's `referring_visit_id` now names a row that exists, and that row's own referrer reaches the SERP.
+
+### Why capture and emission are separated
+
+They answer to different constraints, and collapsing them would break one or the other.
+
+**Capture cannot wait.** `onVisited` is the only way to learn a redirect intermediate's URL, and it fires once. A hop missed because configuration had not loaded is unrecoverable. So the listener runs from the first turn of the worker script with the default rules already seeded.
+
+**Emission must wait.** Points may not be dispatched before configuration is available, and a disabled module must emit nothing at all. So the decision to send is deferred to drain time, where the configuration is known.
+
+The store between them is what lets both be true.
+
 ## Configuration
 
-This module reads from the `visit_graph` section of the backend config. Every field has a default, so the module works before the server knows about it.
+This module reads from the `visit_graph` section of the backend config. Every field has a default, so the module works before the server knows about it — the Google capture rules ship built in, and a study needs no `visit_graph` block at all unless it wants to change something.
+
+The module also declares this shape in code, via `configurationDetails()` in `src/service-worker.mts`. A test asserts that declaration covers every setting the module actually reads, so it cannot fall behind the code the way a README can. Nothing in rex-core consumes `configurationDetails()` today — it is a self-description convention, and this is the copy to trust if the table below ever disagrees with it.
 
 ### Schema
 
@@ -131,6 +163,29 @@ No new permission is required: `chrome.history.onVisited` is covered by `history
 - `./service-worker` - Service worker context
 
 There is no extension or browser context. The module has no UI and injects nothing into pages.
+
+## Module conventions
+
+It is an ordinary REX service-worker module and does nothing bespoke.
+
+| Convention | How this module meets it |
+|------------|--------------------------|
+| Extends `REXServiceWorkerModule` from `@bric/rex-core` | `VisitGraphServiceWorkerModule` |
+| Registers itself at import | `registerREXModule(plugin)` at module scope; consumers `import` for side effects |
+| `setup()` for one-time wiring | Subscribes to configuration changes, then loads configuration |
+| `refreshConfiguration()` as the activation hook | Re-reads `visit_graph`, updates rules, redactor and alarm |
+| `handleMessage()` returning a boolean | Claims `triggerVisitGraphDrain`, returns `false` for everything else so other modules see it |
+| `moduleName()` | Returns `VisitGraph` |
+| `configurationDetails()` | Self-describes every setting, as rex-page-manipulation does. Nothing consumes it yet; a test asserts it covers every setting actually read, so it cannot drift |
+| Emits through `dispatchEvent` | One `rex-visit-graph-hop` point per hop; PDK picks it up with no server change |
+| Configuration under its own key | `REXConfiguration.visit_graph`, defaults for every field |
+| Publishes `.mts` source | Consumers compile it with their own toolchain; toolchain is in `devDependencies` so they do not install it |
+| No functionality duplicated from rex-core | Configuration read via `rexCorePlugin.fetchConfiguration()`, never `chrome.storage` directly |
+
+Two conventions it deliberately does **not** follow, both because it has no UI:
+
+- No `./extension` or `./browser` export. The `exports` map has only `./service-worker`.
+- No `activateInterface()`. There is no interface to activate.
 
 ## Design notes
 
