@@ -27,18 +27,14 @@ import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redac
 const DRAIN_ALARM = 'rex-visit-graph-drain'
 
 /**
- * `/aclk` and `/goto` are both observed in the field (2026-09-01): `/aclk` on an
- * ad click, `/goto` on every organic result in a signed-out session. `/url` is
- * Google's long-standing redirector. All three ship because betting on one path
- * captured nothing when Google moved between them. The server overrides this.
+ * No capture rules by default: the module captures the whole graph, and a study
+ * narrows it if it wants less. Naming sites here would make the module's default
+ * a client override, and would leave any redirector nobody has seen yet silently
+ * uncollected — which is the failure this module exists to end.
  */
 const DEFAULT_CONFIG: VisitGraphConfig = {
   enabled: true,
-  capture_rules: [
-    { id: 'google-aclk', host_suffix: 'google.com', path_prefix: '/aclk' },
-    { id: 'google-goto', host_suffix: 'google.com', path_prefix: '/goto' },
-    { id: 'google-url', host_suffix: 'google.com', path_prefix: '/url' }
-  ],
+  capture_rules: [],
   include_url: false,
   drain_interval_minutes: 15,
   max_hop_age_days: 7
@@ -75,7 +71,8 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           path_prefix: 'String, matches when the visited path starts with this.'
         }],
         include_url: 'Boolean, true to emit the captured URL alongside the visit ids. Redacted first, '
-          + "using rex-history's lists when it states any, otherwise visit_graph.redaction.",
+          + "using rex-history's lists when it states any, otherwise visit_graph.redaction. When false the "
+          + 'address is discarded as soon as the visit ids are resolved and is never stored.',
         drain_interval_minutes: 'Number, minutes between emitting stored hops. Chrome clamps alarms to a '
           + 'one minute minimum.',
         max_hop_age_days: 'Number, days after which a hop that was never emitted is discarded.',
@@ -97,7 +94,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       return false
     }
 
-    const rule = this.captureRules.match(item.url)
+    const rule = this.captureRules.decide(item.url)
 
     if (rule === null) {
       return false
@@ -109,7 +106,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       return false
     }
 
-    await this.hopStore.record(visit, item.url, rule)
+    // The URL has done its job once the ids are resolved. Keep it only if it is
+    // going to be emitted.
+    await this.hopStore.record(visit, this.config.include_url ? item.url : null, rule)
     return true
   }
 
@@ -127,7 +126,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       const emitted: string[] = []
 
       for (const record of records) {
-        const url = this.config.include_url ? await this.redactor.redact(record.url) : undefined
+        const url = this.config.include_url && record.url !== null
+          ? await this.redactor.redact(record.url)
+          : undefined
 
         dispatchEvent({
           name: 'rex-visit-graph-hop',
@@ -266,10 +267,6 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 }
 
 const plugin = new VisitGraphServiceWorkerModule()
-
-// Seeded before any await so a cold worker captures the known Google shapes
-// during the window before configuration resolves.
-plugin.captureRules.update(DEFAULT_CONFIG.capture_rules)
 
 // Both listeners are registered here, at module scope, in the first turn of the
 // worker script. A chrome.history or chrome.alarms listener added after an await

@@ -6,9 +6,9 @@
  * so hops disappear and the module looks like it never fired. Distinct keys
  * cannot collide, so there is nothing to serialise.
  *
- * The stored record always holds the URL. Whether the URL is emitted is a
- * separate decision made at drain time: storage is local and short-lived,
- * emission leaves the machine.
+ * The URL is held only when it is going to be emitted. It is needed to resolve
+ * the visit's ids and is worthless afterwards, so in the default configuration
+ * the store holds edges and nothing else — no address at rest, none in flight.
  */
 
 import type { CaptureRule } from './capture-rules.mts'
@@ -20,12 +20,12 @@ export interface HopRecord {
   visit_id: string;
   referring_visit_id: string;
   visit_time: number;
-  url: string;
+  url: string | null;
   capture_rule: string;
 }
 
 export class HopStore {
-  async record(visit: HopVisit, url: string, rule: CaptureRule): Promise<void> {
+  async record(visit: HopVisit, url: string | null, rule: CaptureRule): Promise<void> {
     const hop: HopRecord = {
       visit_id: visit.visitId,
       referring_visit_id: visit.referringVisitId,

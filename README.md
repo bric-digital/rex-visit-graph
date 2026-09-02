@@ -1,17 +1,19 @@
 # rex-visit-graph
 
-REX module that captures the browser visits `chrome.history.search()` omits, so referral chains resolve.
+REX module that records the browser's visit graph, including the visits `chrome.history.search()` omits, so referral chains resolve.
 
 ## Overview
 
 Chrome stores redirect intermediates but keeps them out of history search results. A collector that enumerates with `chrome.history.search()` therefore never sees them, while the landing page it does collect still points at one through `referringVisitId`. That id belongs to no exported row, so the chain from a click back to the search that produced it terminates, and the visit cannot be attributed to the search.
 
-`chrome.history.onVisited` does fire for those visits, which is the only way to learn the URL. **rex-visit-graph** listens for them and emits their ids. It:
+`chrome.history.onVisited` does fire for those visits, which is the only way to learn they happened. **rex-visit-graph** listens and emits their ids. It:
 
-- Watches every visit and keeps the ones matching a server-configured rule
+- Watches every visit the browser reports and captures the whole graph by default
 - Resolves each one's visit id and referring visit id via `chrome.history.getVisits()`
 - Emits them as `rex-visit-graph-hop` points on its own schedule
-- Sends ids only by default, so it holds no addresses and depends on no other module
+- Sends ids only by default, and discards the address once the ids are resolved, so it holds no addresses at all and depends on no other module
+
+**Capture rules narrow, they do not enable.** With none configured every http(s) visit is captured. A study that wants less states rules to reduce it. That way a redirector nobody has seen yet is captured anyway, instead of going silently uncollected until somebody notices the data is missing — which is the failure this module exists to end.
 
 Analysis joins on `visit_id`: the landing page's `referring_visit_id` resolves to a held row, and that row's own referrer reaches the search page with its query intact.
 
@@ -49,7 +51,7 @@ The store between them is what lets both be true.
 
 ## Configuration
 
-This module reads from the `visit_graph` section of the backend config. Every field has a default, so the module works before the server knows about it — the Google capture rules ship built in, and a study needs no `visit_graph` block at all unless it wants to change something.
+This module reads from the `visit_graph` section of the backend config. Every field has a default, so the module works before the server knows about it — a study needs no `visit_graph` block at all unless it wants to narrow capture, emit URLs, or turn the module off.
 
 The module also declares this shape in code, via `configurationDetails()` in `src/service-worker.mts`. A test asserts that declaration covers every setting the module actually reads, so it cannot fall behind the code the way a README can. Nothing in rex-core consumes `configurationDetails()` today — it is a self-description convention, and this is the copy to trust if the table below ever disagrees with it.
 
@@ -58,7 +60,7 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `true` | Enable/disable the module; see below |
-| `capture_rules` | array | No | Google `/aclk`, `/goto`, `/url` | Which visits to keep; see below |
+| `capture_rules` | array | No | `[]` (capture everything) | Optional narrowing filter; see below |
 | `include_url` | boolean | No | `false` | Emit the captured URL as well as the ids; see Redaction below |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
 | `drain_interval_minutes` | number | No | `15` | How often stored hops are emitted (Chrome clamps to 1 minute) |
@@ -72,7 +74,7 @@ Each entry in `capture_rules` is an object:
 | `host_suffix` | string | Yes | Matches this host exactly or a true subdomain, never a lookalike such as `notgoogle.com` |
 | `path_prefix` | string | Yes | Matches when the path starts with this string |
 
-Rules are server-side because the paths change: `/goto` and `/aclk` were both observed in one day, and a build shipping only one of them would have captured nothing.
+Rules are a narrowing filter and are server-side because a study's appetite changes without a Web Store release. Leaving them empty is the safe choice: it cannot miss a redirector. Stating them reduces volume at the cost of only capturing what you named — and the paths do change, so a rule list is a maintenance commitment. `/goto` and `/aclk` were both observed on Google within one day.
 
 ### Redaction, when `include_url` is on
 

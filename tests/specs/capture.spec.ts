@@ -33,7 +33,13 @@ test.describe('rex-visit-graph — real extension', () => {
       headless: false,
       args: [
         `--disable-extensions-except=${extensionPath}`,
-        `--load-extension=${extensionPath}`
+        `--load-extension=${extensionPath}`,
+        // Headed is not a choice: Chrome's CDP bridge does not expose extension
+        // service workers in headless mode, so the specs cannot reach the module.
+        // Parking the window off-screen keeps it out of the way of whoever is at
+        // the keyboard; it still takes focus briefly on launch.
+        '--window-position=-3000,-3000',
+        '--window-size=800,600'
       ]
     })
 
@@ -67,7 +73,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       p.captureRules.update(rules)
-      const rule = p.captureRules.match('https://www.google.com/goto?url=CAESUgHrOzAV')
+      const rule = p.captureRules.decide('https://www.google.com/goto?url=CAESUgHrOzAV')
       return rule ? rule.id : null
     }, GOOGLE_RULES)
 
@@ -79,7 +85,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       p.captureRules.update(rules)
-      return p.captureRules.match('https://www.google.com/search?q=home+depot')
+      return p.captureRules.decide('https://www.google.com/search?q=home+depot')
     }, GOOGLE_RULES)
 
     expect(matched).toBeNull()
@@ -90,7 +96,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       p.captureRules.update(rules)
-      return p.captureRules.match('https://notgoogle.com/goto?url=x')
+      return p.captureRules.decide('https://notgoogle.com/goto?url=x')
     }, GOOGLE_RULES)
 
     expect(matched).toBeNull()
@@ -101,10 +107,88 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       p.captureRules.update(rules)
-      return p.captureRules.match('not a url')
+      return p.captureRules.decide('not a url')
     }, GOOGLE_RULES)
 
     expect(matched).toBeNull()
+  })
+
+  test('with no rules configured, captures any http visit', async () => {
+    const decisions = await serviceWorker.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      p.captureRules.update([])
+      return {
+        narrowed: p.captureRules.isNarrowed(),
+        goto: p.captureRules.decide('https://www.google.com/goto?url=CAES')?.id ?? null,
+        ordinary: p.captureRules.decide('https://example.com/some/page')?.id ?? null,
+        insecure: p.captureRules.decide('http://example.com/')?.id ?? null,
+      }
+    })
+
+    expect(decisions.narrowed).toBe(false)
+    expect(decisions.goto).toBe('all')
+    expect(decisions.ordinary).toBe('all')
+    expect(decisions.insecure).toBe('all')
+  })
+
+  test('skips schemes that are not part of the browsing graph', async () => {
+    const decisions = await serviceWorker.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      p.captureRules.update([])
+      return [
+        p.captureRules.decide('chrome://history/'),
+        p.captureRules.decide('file:///Users/someone/private.pdf'),
+        p.captureRules.decide('chrome-extension://abc/page.html'),
+      ]
+    })
+
+    expect(decisions).toEqual([null, null, null])
+  })
+
+  test('rules narrow capture rather than enabling it', async () => {
+    const decisions = await serviceWorker.evaluate((rules) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      p.captureRules.update(rules)
+      return {
+        narrowed: p.captureRules.isNarrowed(),
+        matching: p.captureRules.decide('https://www.google.com/goto?url=CAES')?.id ?? null,
+        other: p.captureRules.decide('https://example.com/some/page')?.id ?? null,
+      }
+    }, GOOGLE_RULES)
+
+    expect(decisions.narrowed).toBe(true)
+    expect(decisions.matching).toBe('google-goto')
+    // Captured when unnarrowed, skipped once a study states rules.
+    expect(decisions.other).toBeNull()
+  })
+
+  test('does not hold the URL when it will not be emitted', async () => {
+    const stored = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { include_url: false } } })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+
+      const real = chrome.history.getVisits
+      chrome.history.getVisits = async () => ([
+        { id: '1', visitId: '5', referringVisitId: '4', visitTime: 1000, transition: 'link', isLocal: true }
+      ]) as never
+      try {
+        await p.captureVisit({ id: '1', url: 'https://example.com/private/page?token=secret' })
+      } finally {
+        chrome.history.getVisits = real
+      }
+
+      return await p.hopStore.readAll()
+    })
+
+    expect(stored).toHaveLength(1)
+    // The address did its job resolving the ids and is not kept.
+    expect(stored[0].url).toBeNull()
+    expect(stored[0].visit_id).toBe('5')
   })
 
   // -------------------------------------------------------------------------
@@ -258,7 +342,7 @@ test.describe('rex-visit-graph — real extension', () => {
   // Configuration
   // -------------------------------------------------------------------------
 
-  test('ships Google defaults when the server sends nothing', async () => {
+  test('narrows nothing when the server sends no configuration', async () => {
     const config = await serviceWorker.evaluate(async () => {
       await chrome.storage.local.set({ REXConfiguration: {} })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -269,9 +353,10 @@ test.describe('rex-visit-graph — real extension', () => {
 
     expect(config.enabled).toBe(true)
     expect(config.include_url).toBe(false)
-    // /aclk and /goto are both observed in the field; /url is long-standing.
-    const paths = config.capture_rules.map((rule: { path_prefix: string }) => rule.path_prefix).sort()
-    expect(paths).toEqual(['/aclk', '/goto', '/url'])
+    // No rules by default: capture the whole graph, let a study narrow it. Naming
+    // sites here would make the module's default a client override, and would
+    // leave any redirector nobody has seen yet silently uncollected.
+    expect(config.capture_rules).toEqual([])
   })
 
   test('server configuration replaces the defaults', async () => {
