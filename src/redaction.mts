@@ -15,6 +15,10 @@
  * direction is closed, not open.
  */
 
+// CJK Note: I'm not super-familiar with how redaction works in rex-history, so 
+// take comments made here with a couple less degrees of certainty than those 
+// made elsewhere.
+
 import * as listUtils from '@bric/rex-lists'
 
 export interface RedactionLists {
@@ -75,6 +79,8 @@ export class UrlRedactor {
     return url
   }
 
+  // CJK Note: I hadn't seen the "keyof" specifier before. Neat.
+
   private names(key: keyof RedactionLists): string[] {
     const value = this.lists[key]
     return Array.isArray(value) ? value : []
@@ -90,6 +96,10 @@ export class UrlRedactor {
     return false
   }
 
+  // CJK Note: Lists should probably be fuller objects in rex-lists so that you don't
+  // need to route something through a "listUtils" helper object when a list could just 
+  // expose its own "match" method.
+
   /**
    * A list that cannot be read is reported as no match rather than throwing, so
    * one broken list cannot stop a hop being emitted. Combined with the
@@ -104,6 +114,10 @@ export class UrlRedactor {
     }
   }
 }
+
+// CJK Note: It may be worth emitting a non-debug console message when rex-history config
+// is driving over a provided custom config. I can see this creating all kinds of debug
+// headaches for folks who are not aware of or forget this.
 
 /**
  * rex-history's settings win when it has any, so the two modules cannot disagree

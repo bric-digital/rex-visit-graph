@@ -7,11 +7,15 @@
  * just fired.
  */
 
+// CJK Note: HopVisit should include the URL it's describing as a field.
+
 export interface HopVisit {
   visitId: string;
   referringVisitId: string;
   visitTime: number;
 }
+
+// CJK Note: Why is VisitLookup a class and not just a function in the service worker file?
 
 export class VisitLookup {
   async newestVisit(url: string): Promise<HopVisit | null> {

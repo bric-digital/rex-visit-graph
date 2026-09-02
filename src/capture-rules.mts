@@ -13,7 +13,13 @@
  * config-supplied regex is a denial-of-service surface in a service worker.
  */
 
+// CJK Note: I would like some elaboration on "and a config-supplied regex is a 
+// denial-of-service surface in a service worker" to know what the robot has in mind.
+
 import type { RedactionLists } from './redaction.mjs'
+
+// CJK Note: host_suffix should be a case-insensitive match since DNS is 
+// case-insensitive.
 
 export interface CaptureRule {
   /** Stable label emitted with each hop so analysts can tell rules apart. */
@@ -23,6 +29,9 @@ export interface CaptureRule {
   /** Matches when the path starts with this string. */
   path_prefix: string;
 }
+
+// CJK Note: include_all_schemes should be a case-insensitive list of schemes
+// to capture, not an all or nothing boolean.
 
 export interface VisitGraphConfig {
   enabled: boolean;
@@ -46,6 +55,8 @@ export interface VisitGraphConfig {
   /** Used only when rex-history states no lists of its own. */
   redaction?: RedactionLists;
 }
+
+// CJK Note: UrlDetail is good.
 
 /** Stands in for "no narrowing configured", so every emitted hop names a rule. */
 export type UrlDetail = 'none' | 'path' | 'full'
@@ -78,6 +89,9 @@ export class CaptureRules {
     this.rules = Array.isArray(rules) ? rules : []
   }
 
+  // CJK Note: Why is undefined a valid value to pass in setAllSchemes and update? I'd remove that so TS throws
+  // an error if it's accidentally omitted.
+
   /**
    * Whether to capture visits outside http(s).
    *
@@ -108,6 +122,10 @@ export class CaptureRules {
       return null
     }
 
+    // CJK Note: As per above on allSchemes, this should be:
+    // if (this.schemes.length > 0 && this.allSchemes.includes(parsed.protocol) === false) {
+    // This allows more flexible support of other protocols (ftp, gopher, file, webdav).
+
     if (!this.allSchemes && parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return null
     }
@@ -136,6 +154,8 @@ export class CaptureRules {
       return null
     }
   }
+
+  // CJK Note: Make case-insensitive. Also, add a check for "*" (as last seen in your CAPTURE_ALL).
 
   /**
    * Exact host or a true subdomain. A plain `endsWith` would also match

@@ -37,6 +37,9 @@ export class HopStore {
     await chrome.storage.local.set({ [this.keyFor(visit.visitId)]: hop })
   }
 
+  // CJK Note: Should use chrome.storage.local.getKeys and iterate over those
+  // instead of pulling down all of the local storage.
+
   async readAll(): Promise<HopRecord[]> {
     const stored = await chrome.storage.local.get()
     const records: HopRecord[] = []

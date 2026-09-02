@@ -158,6 +158,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         await this.hopStore.forget(emitted)
       }
 
+      // CJK Note: If we get this far, are there any outdated records that we need to clean out?
+      // Should this be done BEFORE transmission, instead of after?
+
       await this.hopStore.sweep(Date.now() - (this.config.max_hop_age_days * 24 * 60 * 60 * 1000))
 
       return emitted.length
@@ -209,15 +212,22 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     return this.config.url_detail ?? 'none'
   }
 
+  // CJK Note: Shouldn't a reset also clear the stored data?
+
   /** Test seam: a worker restart reconstructs the instance with the guard clear. */
   resetForTest(): void {
     this.draining = false
   }
 
+    // CJK Note: If the worker is killed, shouldn't draining reset to the default value when next restarted?
+
   /** Test seam: a worker killed mid-drain leaves the guard set in the dead instance. */
   forceDrainingForTest(value: boolean): void {
     this.draining = value
   }
+
+  // CJK Note: The host extension should have FULL CONTROL over the alarms. Modules
+  // shouldn't be freelancing and adding their own alarms.
 
   /**
    * Leave a correctly scheduled alarm alone.
@@ -248,6 +258,11 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       delayInMinutes: this.config.drain_interval_minutes
     })
   }
+
+  // CJK Note: Setting variables should be in an async updateConfiguration (see rex-spider) so that 
+  // configuration may be updated through other channels and not JUST the server-provided config.
+  // This method should get the relevant config dict from the overall config, THEN call updateConfiguration
+  // with it.
 
   async refreshConfiguration(): Promise<void> {
     try {
@@ -287,6 +302,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     }
   }
 
+  // CJK Note: See note above about config changes. We shouldn't be relying on a config stored in 
+  // local storage HERE, but delegate that to REX-Core so those decisions can be made consistently
+  // for ALL extensions at a common level.
+
   async setup(): Promise<void> {
     console.log('[rex-visit-graph/service-worker] Setting up visit graph capture')
 
@@ -305,6 +324,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
 const plugin = new VisitGraphServiceWorkerModule()
 
+// CJK Note: This listener should be set up in the setup() function, subject to whether the extension
+// is configured to be enabled or not, NOT at this level where they're listening regardless of whether the
+// extension is enabled.
+
 // Both listeners are registered here, at module scope, in the first turn of the
 // worker script. A chrome.history or chrome.alarms listener added after an await
 // is registered too late to wake an evicted worker, and the waking event is lost.
@@ -313,6 +336,8 @@ chrome.history.onVisited.addListener((item) => {
     console.error('[rex-visit-graph] Capture failed:', error)
   })
 })
+
+// CJK Note: This listener should not exist - see alarm comments above.
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === DRAIN_ALARM) {
