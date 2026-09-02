@@ -15,7 +15,7 @@ Chrome stores redirect intermediates but keeps them out of history search result
 - Emits them as `rex-visit-graph-hop` points on its own schedule
 - Sends ids only by default, and discards the address once the ids are resolved, so it holds no addresses at all and depends on no other module
 
-**Capture rules narrow, they do not enable.** With none configured every http(s) visit is captured, and `include_all_schemes` extends that to `chrome://`, `file://` and extension pages. A study that wants less states rules to reduce it. That way a redirector nobody has seen yet is captured anyway, instead of going silently uncollected until somebody notices the data is missing — which is the failure this module exists to end.
+**Capture rules narrow, they do not enable.** With none configured every visit on a configured scheme is captured; `schemes` decides which those are. A study that wants less states rules to reduce it. That way a redirector nobody has seen yet is captured anyway, instead of going silently uncollected until somebody notices the data is missing — which is the failure this module exists to end.
 
 Analysis joins on `visit_id`: the landing page's `referring_visit_id` resolves to a held row, and that row's own referrer reaches the search page with its query intact.
 
@@ -63,7 +63,7 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 |-------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `true` | Enable/disable the module; see below |
 | `capture_rules` | array | No | `[]` (capture everything) | Optional narrowing filter; see below |
-| `include_all_schemes` | boolean | No | `false` | Capture visits outside http(s) — `chrome://`, `file://`, extension pages |
+| `schemes` | array | No | `["http", "https"]` | Schemes to capture, without the colon, matched case-insensitively. Name others (`file`, `ftp`, `webdav`) to opt into them |
 | `url_detail` | string | No | `"none"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
 | `debug` | boolean | No | `false` | Forces `url_detail` to `"full"` in any build, for diagnosing a deployment |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
@@ -75,7 +75,7 @@ Each entry in `capture_rules` is an object:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | Yes | Stable label emitted with each hop, so rules can be told apart |
-| `host_suffix` | string | Yes | Matches this host exactly or a true subdomain, never a lookalike such as `notgoogle.com` |
+| `host_suffix` | string | Yes | Matches this host exactly or a true subdomain, case-insensitively, never a lookalike such as `notgoogle.com`. `*` matches any host |
 | `path_prefix` | string | Yes | Matches when the path starts with this string |
 
 Rules are a narrowing filter and are server-side because a study's appetite changes without a Web Store release. Leaving them empty is the safe choice: it cannot miss a redirector. Stating them reduces volume at the cost of only capturing what you named — and the paths do change, so a rule list is a maintenance commitment. `/goto` and `/aclk` were both observed on Google within one day.
@@ -124,7 +124,7 @@ One caveat to weigh before enabling it: a Google hop's own host is `google.com`,
       { "id": "google-goto", "host_suffix": "google.com", "path_prefix": "/goto" },
       { "id": "google-url", "host_suffix": "google.com", "path_prefix": "/url" }
     ],
-    "include_all_schemes": false,
+    "schemes": ["http", "https"],
     "url_detail": "none",
     "debug": false,
     "drain_interval_minutes": 15,

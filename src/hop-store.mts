@@ -25,32 +25,33 @@ export interface HopRecord {
 }
 
 export class HopStore {
-  async record(visit: HopVisit, url: string | null, rule: CaptureRule): Promise<void> {
+  async record(visit: HopVisit, emittableUrl: string | null, rule: CaptureRule): Promise<void> {
     const hop: HopRecord = {
       visit_id: visit.visitId,
       referring_visit_id: visit.referringVisitId,
       visit_time: visit.visitTime,
-      url,
+      url: emittableUrl,
       capture_rule: rule.id
     }
 
     await chrome.storage.local.set({ [this.keyFor(visit.visitId)]: hop })
   }
 
-  // CJK Note: Should use chrome.storage.local.getKeys and iterate over those
-  // instead of pulling down all of the local storage.
-
+  /**
+   * Reads by key rather than pulling the extension's whole local storage down to
+   * filter it — this module's records are a handful among everything every other
+   * module keeps.
+   */
   async readAll(): Promise<HopRecord[]> {
-    const stored = await chrome.storage.local.get()
-    const records: HopRecord[] = []
+    const keys = (await chrome.storage.local.getKeys()).filter((key) => key.startsWith(KEY_PREFIX))
 
-    for (const key of Object.keys(stored)) {
-      if (key.startsWith(KEY_PREFIX)) {
-        records.push(stored[key] as HopRecord)
-      }
+    if (keys.length === 0) {
+      return []
     }
 
-    return records
+    const stored = await chrome.storage.local.get(keys)
+
+    return keys.map((key) => stored[key] as HopRecord).filter((record) => record !== undefined)
   }
 
   async forget(visitIds: string[]): Promise<void> {

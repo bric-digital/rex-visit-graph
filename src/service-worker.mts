@@ -19,8 +19,8 @@
 
 import rexCorePlugin, { REXServiceWorkerModule, registerREXModule, dispatchEvent } from '@bric/rex-core/service-worker'
 import type { REXConfiguration } from '@bric/rex-core/common'
-import { CAPTURE_ALL, CaptureRules, urlAtDetail, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
-import { VisitLookup } from './visit-lookup.mjs'
+import { CAPTURE_ALL, CaptureRules, DEFAULT_SCHEMES, urlAtDetail, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
+import { newestVisit } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
 
@@ -35,7 +35,7 @@ const DRAIN_ALARM = 'rex-visit-graph-drain'
 const DEFAULT_CONFIG: VisitGraphConfig = {
   enabled: true,
   capture_rules: [],
-  include_all_schemes: false,
+  schemes: [...DEFAULT_SCHEMES],
   url_detail: 'none',
   debug: false,
   drain_interval_minutes: 15,
@@ -44,7 +44,6 @@ const DEFAULT_CONFIG: VisitGraphConfig = {
 
 class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   readonly captureRules = new CaptureRules()
-  readonly visitLookup = new VisitLookup()
   readonly hopStore = new HopStore()
   readonly redactor = new UrlRedactor()
 
@@ -72,9 +71,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           host_suffix: 'String, matches this host exactly or any subdomain of it.',
           path_prefix: 'String, matches when the visited path starts with this.'
         }],
-        include_all_schemes: 'Boolean, true to capture visits outside http and https '
-          + '(chrome://, file://, extension pages). False by default: those are not ordinary '
-          + 'browsing, and a local file path is a different kind of disclosure from a web page.',
+        schemes: ['String, a URL scheme to capture, without the colon. Defaults to http and https. '
+          + 'Naming others (file, ftp, webdav) opts into them: they are not ordinary browsing, and a '
+          + 'local file path is a different kind of disclosure from a web page.'],
         url_detail: "String: 'none' (default), 'path' or 'full'. 'none' keeps ids only and discards the "
           + "address as soon as the visit ids are resolved. 'path' keeps origin and pathname, which says what "
           + "an intermediate was without the destination a redirector encodes in its query. 'full' keeps the "
@@ -109,7 +108,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       return false
     }
 
-    const visit = await this.visitLookup.newestVisit(item.url)
+    const visit = await newestVisit(item.url)
 
     if (visit === null) {
       return false
@@ -118,7 +117,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     // Store at the granularity that will be emitted, so the module never holds
     // more of an address than it is configured to send. The address has done its
     // job once the ids are resolved.
-    await this.hopStore.record(visit, urlAtDetail(item.url, this.urlDetail()), rule)
+    await this.hopStore.record(visit, urlAtDetail(visit.url, this.urlDetail()), rule)
     return true
   }
 
@@ -132,6 +131,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     this.draining = true
 
     try {
+      // Sweep first, so a record past its age is discarded rather than sent.
+      await this.hopStore.sweep(Date.now() - (this.config.max_hop_age_days * 24 * 60 * 60 * 1000))
+
       const records = await this.hopStore.readAll()
       const emitted: string[] = []
 
@@ -157,11 +159,6 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       if (emitted.length > 0) {
         await this.hopStore.forget(emitted)
       }
-
-      // CJK Note: If we get this far, are there any outdated records that we need to clean out?
-      // Should this be done BEFORE transmission, instead of after?
-
-      await this.hopStore.sweep(Date.now() - (this.config.max_hop_age_days * 24 * 60 * 60 * 1000))
 
       return emitted.length
     } catch (error) {
@@ -212,17 +209,21 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     return this.config.url_detail ?? 'none'
   }
 
-  // CJK Note: Shouldn't a reset also clear the stored data?
-
-  /** Test seam: a worker restart reconstructs the instance with the guard clear. */
-  resetForTest(): void {
+  /**
+   * Test seam: simulates a WORKER RESTART, which clears in-memory state and
+   * leaves chrome.storage untouched. Clearing the store here would assert
+   * something that never happens.
+   */
+  simulateWorkerRestart(): void {
     this.draining = false
   }
 
-    // CJK Note: If the worker is killed, shouldn't draining reset to the default value when next restarted?
-
-  /** Test seam: a worker killed mid-drain leaves the guard set in the dead instance. */
-  forceDrainingForTest(value: boolean): void {
+  /**
+   * Test seam: a worker killed mid-drain leaves the guard set in the instance
+   * that died. It resets on restart on its own, because `draining` is a plain
+   * field and is never persisted; this exists to prove that.
+   */
+  simulateDrainInterrupted(value: boolean): void {
     this.draining = value
   }
 
@@ -271,7 +272,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
       this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
       this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
-      this.captureRules.setAllSchemes(this.config.include_all_schemes)
+      this.captureRules.setSchemes(this.config.schemes)
 
       // Until configuration arrives the module has no rules, so it captures
       // everything under CAPTURE_ALL. Those provisional hops are reconciled here.

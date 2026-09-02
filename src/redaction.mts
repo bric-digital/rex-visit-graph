@@ -15,10 +15,6 @@
  * direction is closed, not open.
  */
 
-// CJK Note: I'm not super-familiar with how redaction works in rex-history, so 
-// take comments made here with a couple less degrees of certainty than those 
-// made elsewhere.
-
 import * as listUtils from '@bric/rex-lists'
 
 export interface RedactionLists {
@@ -79,8 +75,6 @@ export class UrlRedactor {
     return url
   }
 
-  // CJK Note: I hadn't seen the "keyof" specifier before. Neat.
-
   private names(key: keyof RedactionLists): string[] {
     const value = this.lists[key]
     return Array.isArray(value) ? value : []
@@ -95,10 +89,6 @@ export class UrlRedactor {
 
     return false
   }
-
-  // CJK Note: Lists should probably be fuller objects in rex-lists so that you don't
-  // need to route something through a "listUtils" helper object when a list could just 
-  // expose its own "match" method.
 
   /**
    * A list that cannot be read is reported as no match rather than throwing, so
@@ -115,14 +105,14 @@ export class UrlRedactor {
   }
 }
 
-// CJK Note: It may be worth emitting a non-debug console message when rex-history config
-// is driving over a provided custom config. I can see this creating all kinds of debug
-// headaches for folks who are not aware of or forget this.
-
 /**
  * rex-history's settings win when it has any, so the two modules cannot disagree
  * about what may be recorded. `visit_graph.redaction` applies only when rex-history
  * states nothing.
+ *
+ * When both are set the precedence is announced rather than silent: a study that
+ * writes `visit_graph.redaction` and sees rex-history's lists applied instead has
+ * no way to tell from the data that its own setting was ignored.
  */
 export function resolveRedactionLists(
   historySection: RedactionLists | undefined,
@@ -139,6 +129,15 @@ export function resolveRedactionLists(
     || (history.domain_only_lists?.length ?? 0) > 0
 
   if (historyStatesSomething) {
+    const ownStatesSomething = (ownSection?.allow_lists?.length ?? 0) > 0
+      || (ownSection?.filter_lists?.length ?? 0) > 0
+      || (ownSection?.domain_only_lists?.length ?? 0) > 0
+
+    if (ownStatesSomething) {
+      console.warn('[rex-visit-graph] Both rex-history and visit_graph.redaction state lists. '
+        + "rex-history's are being used; visit_graph.redaction is ignored.")
+    }
+
     return history
   }
 

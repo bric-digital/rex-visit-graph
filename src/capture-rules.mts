@@ -9,17 +9,14 @@
  *
  * Rules arrive from server configuration so a study can change its own narrowing
  * without a Chrome Web Store release. Matching is host-suffix plus path-prefix
- * rather than a regular expression: the shapes needed are simple, and a
- * config-supplied regex is a denial-of-service surface in a service worker.
+ * rather than a regular expression, because config is not code-reviewed the way
+ * source is: a pattern like `(a+)+$` backtracks catastrophically on a long
+ * non-matching input, and this runs once per visit inside the service worker, so
+ * a mistyped rule would hang the worker rather than fail a build. Prefix and
+ * suffix matching cannot do that.
  */
 
-// CJK Note: I would like some elaboration on "and a config-supplied regex is a 
-// denial-of-service surface in a service worker" to know what the robot has in mind.
-
 import type { RedactionLists } from './redaction.mjs'
-
-// CJK Note: host_suffix should be a case-insensitive match since DNS is 
-// case-insensitive.
 
 export interface CaptureRule {
   /** Stable label emitted with each hop so analysts can tell rules apart. */
@@ -30,14 +27,15 @@ export interface CaptureRule {
   path_prefix: string;
 }
 
-// CJK Note: include_all_schemes should be a case-insensitive list of schemes
-// to capture, not an all or nothing boolean.
-
 export interface VisitGraphConfig {
   enabled: boolean;
   capture_rules: CaptureRule[];
-  /** Capture visits whose scheme is not http(s). Off by default. */
-  include_all_schemes: boolean;
+  /**
+   * Schemes to capture, matched case-insensitively and without the trailing
+   * colon. Defaults to http and https. A study wanting ftp, file or webdav names
+   * them here rather than waiting for a boolean per scheme.
+   */
+  schemes: string[];
   /**
    * How much of the captured address to keep and emit.
    *
@@ -56,10 +54,11 @@ export interface VisitGraphConfig {
   redaction?: RedactionLists;
 }
 
-// CJK Note: UrlDetail is good.
-
 /** Stands in for "no narrowing configured", so every emitted hop names a rule. */
 export type UrlDetail = 'none' | 'path' | 'full'
+
+/** Ordinary browsing. Anything else is opt-in via `schemes`. */
+export const DEFAULT_SCHEMES = ['http', 'https']
 
 /** Reduce an address to origin plus pathname, dropping query and fragment. */
 export function urlAtDetail(url: string, detail: UrlDetail): string | null {
@@ -83,25 +82,24 @@ export const CAPTURE_ALL: CaptureRule = { id: 'all', host_suffix: '*', path_pref
 
 export class CaptureRules {
   private rules: CaptureRule[] = []
-  private allSchemes = false
+  private schemes: string[] = [...DEFAULT_SCHEMES]
 
-  update(rules: CaptureRule[] | undefined): void {
+  update(rules: CaptureRule[]): void {
+    // Still guarded: this value comes from JSON, where the type says nothing.
     this.rules = Array.isArray(rules) ? rules : []
   }
 
-  // CJK Note: Why is undefined a valid value to pass in setAllSchemes and update? I'd remove that so TS throws
-  // an error if it's accidentally omitted.
-
   /**
-   * Whether to capture visits outside http(s).
+   * Which schemes to capture, without the trailing colon.
    *
-   * Off by default because `chrome://`, `file://` and extension pages are not
-   * ordinary browsing and a study that has not asked for them should not receive
-   * them — a local file path is a different kind of disclosure from a web page.
-   * A study that does want the complete graph turns it on.
+   * Defaults to http and https because `chrome://`, `file://` and extension pages
+   * are not ordinary browsing, and a study that has not asked for them should not
+   * receive them — a local file path is a different kind of disclosure from a web
+   * page. A study wanting the complete graph names the schemes it wants.
    */
-  setAllSchemes(value: boolean | undefined): void {
-    this.allSchemes = value === true
+  setSchemes(schemes: string[]): void {
+    this.schemes = (Array.isArray(schemes) ? schemes : DEFAULT_SCHEMES)
+      .map((scheme) => scheme.toLowerCase().replace(/:$/, ''))
   }
 
   /** True when a study has narrowed capture to a stated set of rules. */
@@ -112,8 +110,7 @@ export class CaptureRules {
   /**
    * The rule under which this URL is captured, or null to skip it.
    *
-   * Unnarrowed, every http(s) visit is captured under CAPTURE_ALL. Other schemes
-   * are skipped unless `include_all_schemes` is on.
+   * Unnarrowed, every visit on a configured scheme is captured under CAPTURE_ALL.
    */
   decide(url: string): CaptureRule | null {
     const parsed = this.parse(url)
@@ -122,11 +119,7 @@ export class CaptureRules {
       return null
     }
 
-    // CJK Note: As per above on allSchemes, this should be:
-    // if (this.schemes.length > 0 && this.allSchemes.includes(parsed.protocol) === false) {
-    // This allows more flexible support of other protocols (ftp, gopher, file, webdav).
-
-    if (!this.allSchemes && parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    if (!this.schemes.includes(parsed.protocol.replace(/:$/, ''))) {
       return null
     }
 
@@ -155,13 +148,21 @@ export class CaptureRules {
     }
   }
 
-  // CJK Note: Make case-insensitive. Also, add a check for "*" (as last seen in your CAPTURE_ALL).
-
-  /**
-   * Exact host or a true subdomain. A plain `endsWith` would also match
+    /**
+   * Exact host, a true subdomain, or `*` for any host.
+   *
+   * Compared lowercased because DNS is case-insensitive and a config-supplied
+   * host may be written any way. A plain `endsWith` would also match
    * `notgoogle.com` against `google.com` and capture from a host no rule names.
    */
   private hostMatches(hostname: string, suffix: string): boolean {
-    return hostname === suffix || hostname.endsWith(`.${suffix}`)
+    if (suffix === '*') {
+      return true
+    }
+
+    const host = hostname.toLowerCase()
+    const wanted = suffix.toLowerCase()
+
+    return host === wanted || host.endsWith(`.${wanted}`)
   }
 }

@@ -7,47 +7,40 @@
  * just fired.
  */
 
-// CJK Note: HopVisit should include the URL it's describing as a field.
-
 export interface HopVisit {
+  /** The address the ids were resolved from. */
+  url: string;
   visitId: string;
   referringVisitId: string;
   visitTime: number;
 }
 
-// CJK Note: Why is VisitLookup a class and not just a function in the service worker file?
+/** Holds no state, so a function rather than a class. */
+export async function newestVisit(url: string): Promise<HopVisit | null> {
+  try {
+    const visits = await chrome.history.getVisits({ url })
+    let newest = visits[0]
 
-export class VisitLookup {
-  async newestVisit(url: string): Promise<HopVisit | null> {
-    try {
-      const visits = await chrome.history.getVisits({ url })
-
-      if (visits.length === 0) {
-        return null
-      }
-
-      let newest = visits[0]
-
-      if (newest === undefined) {
-        return null
-      }
-
-      for (const visit of visits) {
-        if ((visit.visitTime ?? 0) > (newest.visitTime ?? 0)) {
-          newest = visit
-        }
-      }
-
-      return {
-        visitId: newest.visitId,
-        referringVisitId: newest.referringVisitId,
-        visitTime: newest.visitTime ?? Date.now()
-      }
-    } catch (error) {
-      // This runs inside an onVisited handler, where an unhandled rejection is
-      // invisible. Report the miss instead of throwing.
-      console.warn('[rex-visit-graph] getVisits failed:', error)
+    if (newest === undefined) {
       return null
     }
+
+    for (const visit of visits) {
+      if ((visit.visitTime ?? 0) > (newest.visitTime ?? 0)) {
+        newest = visit
+      }
+    }
+
+    return {
+      url,
+      visitId: newest.visitId,
+      referringVisitId: newest.referringVisitId,
+      visitTime: newest.visitTime ?? Date.now()
+    }
+  } catch (error) {
+    // This runs inside an onVisited handler, where an unhandled rejection is
+    // invisible. Report the miss instead of throwing.
+    console.warn('[rex-visit-graph] getVisits failed:', error)
+    return null
   }
 }

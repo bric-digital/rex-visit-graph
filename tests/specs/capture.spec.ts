@@ -137,7 +137,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       p.captureRules.update([])
-      p.captureRules.setAllSchemes(false)
+      p.captureRules.setSchemes(['http', 'https'])
       return [
         p.captureRules.decide('chrome://history/'),
         p.captureRules.decide('file:///Users/someone/private.pdf'),
@@ -148,17 +148,17 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(decisions).toEqual([null, null, null])
   })
 
-  test('include_all_schemes captures them, and it is off by default', async () => {
+  test('other schemes are captured only when named, and are not by default', async () => {
     const result = await serviceWorker.evaluate(async () => {
       await chrome.storage.local.set({ REXConfiguration: {} })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       await p.refreshConfiguration()
-      const configuredDefault = p.currentConfig().include_all_schemes
+      const configuredDefault = p.currentConfig().schemes
       const byDefault = p.captureRules.decide('file:///Users/someone/private.pdf')
 
       await chrome.storage.local.set({
-        REXConfiguration: { visit_graph: { include_all_schemes: true } }
+        REXConfiguration: { visit_graph: { schemes: ['http', 'https', 'file', 'CHROME'] } }
       })
       await p.refreshConfiguration()
 
@@ -166,12 +166,13 @@ test.describe('rex-visit-graph — real extension', () => {
         configuredDefault,
         byDefault,
         file: p.captureRules.decide('file:///Users/someone/private.pdf')?.id ?? null,
+        // Named in mixed case in the config above, matched case-insensitively.
         chromeUrl: p.captureRules.decide('chrome://history/')?.id ?? null,
         stillSkipsGarbage: p.captureRules.decide('not a url'),
       }
     })
 
-    expect(result.configuredDefault).toBe(false)
+    expect(result.configuredDefault).toEqual(['http', 'https'])
     expect(result.byDefault).toBeNull()
     expect(result.file).toBe('all')
     expect(result.chromeUrl).toBe('all')
@@ -206,7 +207,7 @@ test.describe('rex-visit-graph — real extension', () => {
 
       const real = chrome.history.getVisits
       chrome.history.getVisits = async () => ([
-        { id: '1', visitId: '5', referringVisitId: '4', visitTime: 1000, transition: 'link', isLocal: true }
+        { id: '1', visitId: '5', referringVisitId: '4', visitTime: Date.now(), transition: 'link', isLocal: true }
       ]) as never
       try {
         await p.captureVisit({ id: '1', url: 'https://example.com/private/page?token=secret' })
@@ -223,6 +224,31 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(stored[0].visit_id).toBe('5')
   })
 
+  test('host matching is case-insensitive, and * matches any host', async () => {
+    const decisions = await serviceWorker.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      p.captureRules.setSchemes(['http', 'https'])
+
+      // DNS is case-insensitive, so a rule written in any case must match.
+      p.captureRules.update([{ id: 'mixed', host_suffix: 'GOOGLE.com', path_prefix: '/goto' }])
+      const upperRule = p.captureRules.decide('https://WWW.Google.COM/goto?url=x')?.id ?? null
+      const stillNotLookalike = p.captureRules.decide('https://notgoogle.com/goto')
+
+      // `*` is what CAPTURE_ALL uses; it must also work written in config.
+      p.captureRules.update([{ id: 'any', host_suffix: '*', path_prefix: '/goto' }])
+      const wildcard = p.captureRules.decide('https://anything.example/goto')?.id ?? null
+      const wildcardWrongPath = p.captureRules.decide('https://anything.example/other')
+
+      return { upperRule, stillNotLookalike, wildcard, wildcardWrongPath }
+    })
+
+    expect(decisions.upperRule).toBe('mixed')
+    expect(decisions.stillNotLookalike).toBeNull()
+    expect(decisions.wildcard).toBe('any')
+    expect(decisions.wildcardWrongPath).toBeNull()
+  })
+
   // -------------------------------------------------------------------------
   // Capture
   // -------------------------------------------------------------------------
@@ -234,7 +260,7 @@ test.describe('rex-visit-graph — real extension', () => {
       p.captureRules.update(rules)
       const real = chrome.history.getVisits
       chrome.history.getVisits = async () => ([
-        { id: '1', visitId: '5', referringVisitId: '4', visitTime: 1000, transition: 'link', isLocal: true }
+        { id: '1', visitId: '5', referringVisitId: '4', visitTime: Date.now(), transition: 'link', isLocal: true }
       ]) as never
       try {
         await p.captureVisit({ id: '1', url: 'https://www.google.com/goto?url=CAES' })
@@ -268,7 +294,7 @@ test.describe('rex-visit-graph — real extension', () => {
       p.captureRules.update(rules)
       const real = chrome.history.getVisits
       chrome.history.getVisits = async () => ([
-        { id: '1', visitId: '5', referringVisitId: '4', visitTime: 1000, transition: 'link', isLocal: true }
+        { id: '1', visitId: '5', referringVisitId: '4', visitTime: Date.now(), transition: 'link', isLocal: true }
       ]) as never
       try {
         await p.captureVisit({ id: '1', url: 'https://www.google.com/goto?url=CAES' })
@@ -289,7 +315,7 @@ test.describe('rex-visit-graph — real extension', () => {
       const writes = []
       for (let index = 0; index < 20; index += 1) {
         writes.push(p.hopStore.record(
-          { visitId: String(index), referringVisitId: String(index - 1), visitTime: 1000 + index },
+          { visitId: String(index), referringVisitId: String(index - 1), visitTime: Date.now() + index },
           `https://www.google.com/goto?url=CAES${index}`,
           rules[0]
         ))
@@ -310,8 +336,8 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       // url_detail defaults to 'none', so capture stores no address at all.
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, null, rules[0])
-      await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: 2000 }, null, rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, null, rules[0])
+      await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, null, rules[0])
 
       const count = await p.drain()
       const remaining = await p.hopStore.readAll()
@@ -333,12 +359,12 @@ test.describe('rex-visit-graph — real extension', () => {
     const emitted = await serviceWorker.evaluate(async (rules) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
 
       // A worker killed mid-drain leaves the guard set in the dead instance. The
       // replacement reconstructs it clear, and the stored hop is still there.
-      p.forceDrainingForTest(true)
-      p.resetForTest()
+      p.simulateDrainInterrupted(true)
+      p.simulateWorkerRestart()
 
       return await p.drain()
     }, GOOGLE_RULES)
@@ -350,7 +376,7 @@ test.describe('rex-visit-graph — real extension', () => {
     const counts = await serviceWorker.evaluate(async (rules) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
       return await Promise.all([p.drain(), p.drain()])
     }, GOOGLE_RULES)
 
@@ -362,9 +388,10 @@ test.describe('rex-visit-graph — real extension', () => {
     const remaining = await serviceWorker.evaluate(async (rules) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
-      await p.hopStore.record({ visitId: '1', referringVisitId: '0', visitTime: 1000 }, 'https://www.google.com/goto?a', rules[0])
-      await p.hopStore.record({ visitId: '2', referringVisitId: '1', visitTime: 9000 }, 'https://www.google.com/goto?b', rules[0])
-      await p.hopStore.sweep(5000)
+      const old = Date.now() - 60_000
+      await p.hopStore.record({ visitId: '1', referringVisitId: '0', visitTime: old, url: 'x', url: 'https://www.google.com/goto?u' }, null, rules[0])
+      await p.hopStore.record({ visitId: '2', referringVisitId: '1', visitTime: Date.now(), url: 'x', url: 'https://www.google.com/goto?u' }, null, rules[0])
+      await p.hopStore.sweep(Date.now() - 30_000)
       return (await p.hopStore.readAll()).map((r: { visit_id: string }) => r.visit_id)
     }, GOOGLE_RULES)
 
@@ -458,7 +485,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       await p.refreshConfiguration()
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(self as any).__capturedEvents = []
 
@@ -499,7 +526,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       await p.refreshConfiguration()
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(self as any).__capturedEvents = []
       await p.drain()
@@ -543,7 +570,7 @@ test.describe('rex-visit-graph — real extension', () => {
     const result = await serviceWorker.evaluate(async (rules) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
 
       await chrome.storage.local.set({
         REXConfiguration: { visit_graph: { enabled: false, capture_rules: rules } }
@@ -587,7 +614,7 @@ test.describe('rex-visit-graph — real extension', () => {
       const p = (self as any).rexVisitGraphPlugin
       await p.refreshConfiguration()
 
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(self as any).__capturedEvents = []
@@ -611,9 +638,9 @@ test.describe('rex-visit-graph — real extension', () => {
 
       // Two hops as a cold worker would have them: one caught before any rules
       // existed, one under a rule the study went on to state.
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, null,
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, null,
         { id: 'all', host_suffix: '*', path_prefix: '' })
-      await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: Date.now() }, null, rules[0])
+      await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, null, rules[0])
 
       await chrome.storage.local.set({ REXConfiguration: { visit_graph: { capture_rules: rules } } })
       await p.refreshConfiguration()
@@ -630,7 +657,7 @@ test.describe('rex-visit-graph — real extension', () => {
     const result = await serviceWorker.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, null,
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, null,
         { id: 'all', host_suffix: '*', path_prefix: '' })
 
       await chrome.storage.local.set({ REXConfiguration: { visit_graph: {} } })
@@ -692,7 +719,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       await p.refreshConfiguration()
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(self as any).__capturedEvents = []
       await p.drain()
@@ -715,7 +742,7 @@ test.describe('rex-visit-graph — real extension', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       await p.refreshConfiguration()
-      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: 1000 }, 'https://www.google.com/goto?url=CAES', rules[0])
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, 'https://www.google.com/goto?url=CAES', rules[0])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(self as any).__capturedEvents = []
       await p.drain()
@@ -768,7 +795,7 @@ test.describe('rex-visit-graph — real extension', () => {
 
       const real = chrome.history.getVisits
       chrome.history.getVisits = async () => ([
-        { id: '1', visitId: '5', referringVisitId: '4', visitTime: 1000, transition: 'link', isLocal: true }
+        { id: '1', visitId: '5', referringVisitId: '4', visitTime: Date.now(), transition: 'link', isLocal: true }
       ]) as never
       try {
         await p.captureVisit({ id: '1', url: 'https://www.google.com/goto?url=CAESqgEB6zswFTni' })
