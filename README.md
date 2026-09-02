@@ -1,6 +1,8 @@
 # rex-visit-graph
 
-REX module that records the browser's visit graph, including the visits `chrome.history.search()` omits, so referral chains resolve.
+REX module that records the browser's visit graph, including the visits `chrome.history.search()` omits, so referral chains resolve. 
+
+If your study needs to document which pages referred the browser to a target page, you may need this module. 
 
 ## Overview
 
@@ -147,6 +149,12 @@ One `rex-visit-graph-hop` point per captured visit:
 
 No URL, title or domain: nothing about where the participant went, only that one visit led to another.
 
+**A new tab breaks the chain, and this module cannot mend it.** Chrome records no referring visit across a tab boundary: a `target="_blank"` link or a `window.open()` produces `referring_visit_id: "0"`, not a dangling id. Measured on Chrome 152 — same-tab link linked correctly, both new-tab forms did not, and `transition` read `link` for all three so it does not distinguish them either.
+
+That is a different defect from the one this module addresses. A redirect hop leaves a referrer pointing at a visit Chrome hid but still holds; a new tab leaves no referrer at all, and there is nothing for `onVisited` to capture. For analysis it is worse in one way: `referring_visit_id: "0"` is indistinguishable from a typed address or a bookmark, so a new-tab click does not look broken, it looks like arrival from nowhere.
+
+Recovering it needs `chrome.tabs.onCreated`, whose `openerTabId` carries the relationship. That is a separate capability, not an extension of this one.
+
 **The join is exact within one profile's history, and only there.** `visit_id` is a row id in Chrome's history database for that profile, so it is unique across that profile's continuous history and means nothing outside it. A participant with a second computer, or a fresh profile, produces a second id space that starts over at low numbers — so ids from the two will collide and a naive join attaches the wrong URL to the wrong edge, silently.
 
 Partition by install before joining, using the same user-agent comparison rex-history's own `referring_visit_id` already requires. This is not a property of this module: it is how Chrome numbers visits, and it applies identically to walking rex-history's edges on their own.
@@ -220,6 +228,7 @@ Two conventions it deliberately does **not** follow, both because it has no UI:
 - **One storage key per hop.** A single shared array lets concurrent handlers overwrite each other, which presents as the listener never firing.
 - **Emit, then forget.** A worker killed between the two re-emits next cycle; the other order loses the hop. Duplicates are recoverable in analysis, losses are not.
 - **`enabled: false` stops everything, not just capture.** No rules match, no drain alarm is scheduled, `drain()` refuses even when a host calls `triggerVisitGraphDrain` on its own cadence, and anything captured in the window before configuration arrived is discarded rather than held against a later re-enable.
+- **A study that narrows gets only what it asked for.** Until configuration arrives the module has no rules and captures everything under `all`. When configuration then narrows capture, those provisional hops are discarded rather than emitted: they cannot be re-tested against the arriving rules, because the address they would be tested on was dropped at capture. The window is small, since configuration is read from rex-core's cache within milliseconds of worker start.
 - **A correctly scheduled drain alarm is left alone.** A host extension may refresh configuration far more often than the drain interval; re-creating the alarm each time restarts its countdown, and a drain scheduled further out than the refresh cadence would never fire.
 - **The in-progress guard is in memory, never persisted**, so a killed worker cannot strand it and wedge every later drain.
 

@@ -604,6 +604,45 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(result.emitted).toBe(0)
   })
 
+  test('narrowing discards hops captured before configuration arrived', async () => {
+    const result = await serviceWorker.evaluate(async (rules) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+
+      // Two hops as a cold worker would have them: one caught before any rules
+      // existed, one under a rule the study went on to state.
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, null,
+        { id: 'all', host_suffix: '*', path_prefix: '' })
+      await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: Date.now() }, null, rules[0])
+
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { capture_rules: rules } } })
+      await p.refreshConfiguration()
+
+      return (await p.hopStore.readAll()).map((h: { visit_id: string, capture_rule: string }) =>
+        [h.visit_id, h.capture_rule])
+    }, GOOGLE_RULES)
+
+    // The provisional one goes; the one the study asked for stays.
+    expect(result).toEqual([['9', 'google-goto']])
+  })
+
+  test('an unnarrowed study keeps what was captured before configuration', async () => {
+    const result = await serviceWorker.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now() }, null,
+        { id: 'all', host_suffix: '*', path_prefix: '' })
+
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: {} } })
+      await p.refreshConfiguration()
+
+      return (await p.hopStore.readAll()).length
+    })
+
+    // Nothing was narrowed, so nothing was asked to be dropped.
+    expect(result).toBe(1)
+  })
+
   // -------------------------------------------------------------------------
   // Redaction (include_url only)
   // -------------------------------------------------------------------------

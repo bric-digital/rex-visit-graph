@@ -19,7 +19,7 @@
 
 import rexCorePlugin, { REXServiceWorkerModule, registerREXModule, dispatchEvent } from '@bric/rex-core/service-worker'
 import type { REXConfiguration } from '@bric/rex-core/common'
-import { CaptureRules, urlAtDetail, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
+import { CAPTURE_ALL, CaptureRules, urlAtDetail, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
 import { VisitLookup } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
@@ -258,14 +258,23 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
       this.captureRules.setAllSchemes(this.config.include_all_schemes)
 
-      // Capture is seeded with the defaults before configuration arrives, so a
-      // disabled arm can still have captured during that window. Discard it
-      // rather than hold it against a later re-enable.
+      // Until configuration arrives the module has no rules, so it captures
+      // everything under CAPTURE_ALL. Those provisional hops are reconciled here.
       if (!this.config.enabled) {
         const discarded = await this.hopStore.clear()
 
         if (discarded > 0) {
           console.log(`[rex-visit-graph] Disabled; discarded ${discarded} hop(s) captured before configuration.`)
+        }
+      } else if (this.captureRules.isNarrowed()) {
+        // A study that narrows asked for less, so give it less. These cannot be
+        // re-matched against the arriving rules: the address they would be tested
+        // on was discarded at capture, which is the point of not holding one.
+        const discarded = await this.hopStore.forgetByRule(CAPTURE_ALL.id)
+
+        if (discarded > 0) {
+          console.log(`[rex-visit-graph] Narrowed by configuration; discarded ${discarded} hop(s) `
+            + 'captured before it arrived.')
         }
       }
 

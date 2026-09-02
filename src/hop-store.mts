@@ -54,6 +54,17 @@ export class HopStore {
     await chrome.storage.local.remove(visitIds.map((visitId) => this.keyFor(visitId)))
   }
 
+  /** Discard hops recorded under one rule id. Returns how many went. */
+  async forgetByRule(ruleId: string): Promise<number> {
+    const matching = (await this.readAll()).filter((record) => record.capture_rule === ruleId)
+
+    if (matching.length > 0) {
+      await this.forget(matching.map((record) => record.visit_id))
+    }
+
+    return matching.length
+  }
+
   /** Discard everything held. Used when the module is turned off. */
   async clear(): Promise<number> {
     const records = await this.readAll()
