@@ -131,7 +131,13 @@ One `rex-visit-graph-hop` point per captured visit:
 
 No URL, title or domain: nothing about where the participant went, only that one visit led to another.
 
-Two properties analysis should know about:
+**The join is exact within one profile's history, and only there.** `visit_id` is a row id in Chrome's history database for that profile, so it is unique across that profile's continuous history and means nothing outside it. A participant with a second computer, or a fresh profile, produces a second id space that starts over at low numbers — so ids from the two will collide and a naive join attaches the wrong URL to the wrong edge, silently.
+
+Partition by install before joining, using the same user-agent comparison rex-history's own `referring_visit_id` already requires. This is not a property of this module: it is how Chrome numbers visits, and it applies identically to walking rex-history's edges on their own.
+
+Note that reinstalling the *extension* on the same profile does not renumber anything — the history database belongs to the browser profile, not to the extension — so an install-time or extension-issued key would over-partition rather than help.
+
+Two further properties analysis should know about:
 
 - **The series starts at install.** `onVisited` sees only live visits, so hops from before the module ships are unrecoverable and a backfill keeps its dangling references.
 - **A hop may arrive twice.** The drain emits before deleting, so a worker killed between the two re-emits next cycle. Deduplicate on `visit_id`.
