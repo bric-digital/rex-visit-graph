@@ -259,7 +259,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     })
   }
 
-  // CJK Note: Setting variables should be in an async updateConfiguration (see rex-spider) so that 
+  // CJK Note: Setting variables should be in an updateConfiguration (see rex-spider) so that 
   // configuration may be updated through other channels and not JUST the server-provided config.
   // This method should get the relevant config dict from the overall config, THEN call updateConfiguration
   // with it.
