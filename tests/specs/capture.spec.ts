@@ -840,11 +840,11 @@ test.describe('rex-visit-graph — real extension', () => {
     const fs = await import('node:fs')
     const source = fs.readFileSync(path.join(__dirname, '../../src/service-worker.mts'), 'utf8')
 
-    const setupAt = source.indexOf('async setup()')
     const listenerAt = source.indexOf('chrome.history.onVisited.addListener')
     const classEndsAt = source.indexOf('const plugin = new VisitGraphServiceWorkerModule()')
 
-    expect(listenerAt).toBeGreaterThan(setupAt)
+    // Inside the class, reached from setup(), rather than at module scope.
+    expect(listenerAt).toBeGreaterThan(-1)
     expect(listenerAt).toBeLessThan(classEndsAt)
     // Nothing may register a listener at module scope.
     expect(source.slice(classEndsAt).includes('addListener')).toBe(false)
@@ -853,7 +853,7 @@ test.describe('rex-visit-graph — real extension', () => {
   })
 
   test('setup() called twice does not stack listeners', async () => {
-    const captured = await serviceWorker.evaluate(async (rules) => {
+    const calls = await serviceWorker.evaluate(async (rules) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       await chrome.storage.local.set({ REXConfiguration: { visit_graph: { capture_rules: rules } } })
@@ -861,9 +861,9 @@ test.describe('rex-visit-graph — real extension', () => {
       await p.setup()
 
       const real = chrome.history.getVisits
-      let calls = 0
+      let seen = 0
       chrome.history.getVisits = async () => {
-        calls += 1
+        seen += 1
         return [{ id: '1', visitId: '5', referringVisitId: '4', visitTime: Date.now(), transition: 'link', isLocal: true }] as never
       }
       try {
@@ -871,9 +871,57 @@ test.describe('rex-visit-graph — real extension', () => {
       } finally {
         chrome.history.getVisits = real
       }
-      return calls
+      return seen
     }, GOOGLE_RULES)
 
-    expect(captured).toBe(1)
+    expect(calls).toBe(1)
+  })
+
+  test('a disabled module holds no listener at all', async () => {
+    const states = await serviceWorker.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { enabled: true } } })
+      await p.refreshConfiguration()
+      const whenEnabled = p.isListening()
+
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { enabled: false } } })
+      await p.refreshConfiguration()
+      const whenDisabled = p.isListening()
+
+      // And it comes back, rather than being a one-way door.
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { enabled: true } } })
+      await p.refreshConfiguration()
+      const whenReEnabled = p.isListening()
+
+      return { whenEnabled, whenDisabled, whenReEnabled }
+    })
+
+    // Chris, 2026-09-02: "we shouldn't be listening when the module is disabled".
+    // Not a listener that declines to act — no listener.
+    expect(states.whenEnabled).toBe(true)
+    expect(states.whenDisabled).toBe(false)
+    expect(states.whenReEnabled).toBe(true)
+  })
+
+  test('listens before configuration arrives, since a missed visit is unrecoverable', async () => {
+    const listening = await serviceWorker.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { enabled: false } } })
+      await p.refreshConfiguration()
+
+      // setup() starts listening synchronously, before it awaits the fetch.
+      const promise = p.setup()
+      const duringFetch = p.isListening()
+      await promise
+
+      return { duringFetch, afterFetch: p.isListening() }
+    })
+
+    expect(listening.duringFetch).toBe(true)
+    // ...and the disabled configuration then takes the listener away again.
+    expect(listening.afterFetch).toBe(false)
   })
 })

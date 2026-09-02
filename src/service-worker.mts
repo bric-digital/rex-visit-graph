@@ -48,8 +48,8 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   /** In-memory, never persisted: a fresh worker restarts with it clear. */
   private draining = false
 
-  /** setup() may run more than once; the listener is added only the first time. */
-  private listening = false
+  /** Held so it can be removed again; a listener is only removable by reference. */
+  private historyListener: ((item: chrome.history.HistoryItem) => void) | null = null
 
   moduleName(): string {
     return 'VisitGraph'
@@ -235,6 +235,43 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
     this.captureRules.setSchemes(this.config.schemes)
     this.redactor.update(resolveRedactionLists(history, this.config.redaction))
+
+    // Listening follows the enabled flag: a disabled module holds no listener at
+    // all, rather than holding one that declines to act. Both calls are
+    // synchronous, so this stays inside updateConfiguration.
+    if (this.config.enabled) {
+      this.startListening()
+    } else {
+      this.stopListening()
+    }
+  }
+
+  /** True while a history listener is registered. Readable for diagnostics. */
+  isListening(): boolean {
+    return this.historyListener !== null
+  }
+
+  private startListening(): void {
+    if (this.historyListener !== null) {
+      return
+    }
+
+    this.historyListener = (item: chrome.history.HistoryItem) => {
+      this.captureVisit(item).catch((error) => {
+        console.error('[rex-visit-graph] Capture failed:', error)
+      })
+    }
+
+    chrome.history.onVisited.addListener(this.historyListener)
+  }
+
+  private stopListening(): void {
+    if (this.historyListener === null) {
+      return
+    }
+
+    chrome.history.onVisited.removeListener(this.historyListener)
+    this.historyListener = null
   }
 
   /**
@@ -286,24 +323,12 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   async setup(): Promise<void> {
     console.log('[rex-visit-graph/service-worker] Setting up visit graph capture')
 
-    // Registered here rather than at module scope, and once only: rex-core calls
-    // setup() at registration, so this must not accumulate listeners if called
-    // again. Capture is gated on `enabled` at the moment the event arrives, not
-    // at the moment the listener is added, so turning the module off in
-    // configuration stops collection without needing the listener removed.
-    if (!this.listening) {
-      this.listening = true
-
-      chrome.history.onVisited.addListener((item) => {
-        if (!this.config.enabled) {
-          return
-        }
-
-        this.captureVisit(item).catch((error) => {
-          console.error('[rex-visit-graph] Capture failed:', error)
-        })
-      })
-    }
+    // Listen before configuration is fetched, because the module defaults to
+    // enabled and onVisited fires once: a visit missed while the fetch is in
+    // flight is unrecoverable. refreshConfiguration then removes the listener
+    // again if the study has the module turned off, so a disabled module ends up
+    // holding no listener and having emitted nothing.
+    this.startListening()
 
     await this.refreshConfiguration()
   }
