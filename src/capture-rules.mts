@@ -27,6 +27,8 @@ export interface CaptureRule {
 export interface VisitGraphConfig {
   enabled: boolean;
   capture_rules: CaptureRule[];
+  /** Capture visits whose scheme is not http(s). Off by default. */
+  include_all_schemes: boolean;
   include_url: boolean;
   drain_interval_minutes: number;
   max_hop_age_days: number;
@@ -39,9 +41,22 @@ export const CAPTURE_ALL: CaptureRule = { id: 'all', host_suffix: '*', path_pref
 
 export class CaptureRules {
   private rules: CaptureRule[] = []
+  private allSchemes = false
 
   update(rules: CaptureRule[] | undefined): void {
     this.rules = Array.isArray(rules) ? rules : []
+  }
+
+  /**
+   * Whether to capture visits outside http(s).
+   *
+   * Off by default because `chrome://`, `file://` and extension pages are not
+   * ordinary browsing and a study that has not asked for them should not receive
+   * them — a local file path is a different kind of disclosure from a web page.
+   * A study that does want the complete graph turns it on.
+   */
+  setAllSchemes(value: boolean | undefined): void {
+    this.allSchemes = value === true
   }
 
   /** True when a study has narrowed capture to a stated set of rules. */
@@ -53,13 +68,16 @@ export class CaptureRules {
    * The rule under which this URL is captured, or null to skip it.
    *
    * Unnarrowed, every http(s) visit is captured under CAPTURE_ALL. Other schemes
-   * are skipped: extension pages, `chrome://`, `file://` and the like are not
-   * part of the browsing graph and carry no referral worth reconstructing.
+   * are skipped unless `include_all_schemes` is on.
    */
   decide(url: string): CaptureRule | null {
     const parsed = this.parse(url)
 
-    if (parsed === null || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+    if (parsed === null) {
+      return null
+    }
+
+    if (!this.allSchemes && parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return null
     }
 

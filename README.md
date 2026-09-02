@@ -13,7 +13,7 @@ Chrome stores redirect intermediates but keeps them out of history search result
 - Emits them as `rex-visit-graph-hop` points on its own schedule
 - Sends ids only by default, and discards the address once the ids are resolved, so it holds no addresses at all and depends on no other module
 
-**Capture rules narrow, they do not enable.** With none configured every http(s) visit is captured. A study that wants less states rules to reduce it. That way a redirector nobody has seen yet is captured anyway, instead of going silently uncollected until somebody notices the data is missing — which is the failure this module exists to end.
+**Capture rules narrow, they do not enable.** With none configured every http(s) visit is captured, and `include_all_schemes` extends that to `chrome://`, `file://` and extension pages. A study that wants less states rules to reduce it. That way a redirector nobody has seen yet is captured anyway, instead of going silently uncollected until somebody notices the data is missing — which is the failure this module exists to end.
 
 Analysis joins on `visit_id`: the landing page's `referring_visit_id` resolves to a held row, and that row's own referrer reaches the search page with its query intact.
 
@@ -61,6 +61,7 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 |-------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `true` | Enable/disable the module; see below |
 | `capture_rules` | array | No | `[]` (capture everything) | Optional narrowing filter; see below |
+| `include_all_schemes` | boolean | No | `false` | Capture visits outside http(s) — `chrome://`, `file://`, extension pages |
 | `include_url` | boolean | No | `false` | Emit the captured URL as well as the ids; see Redaction below |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
 | `drain_interval_minutes` | number | No | `15` | How often stored hops are emitted (Chrome clamps to 1 minute) |
@@ -106,6 +107,7 @@ One caveat to weigh before enabling it: a Google hop's own host is `google.com`,
       { "id": "google-goto", "host_suffix": "google.com", "path_prefix": "/goto" },
       { "id": "google-url", "host_suffix": "google.com", "path_prefix": "/url" }
     ],
+    "include_all_schemes": false,
     "include_url": false,
     "drain_interval_minutes": 15,
     "max_hop_age_days": 7

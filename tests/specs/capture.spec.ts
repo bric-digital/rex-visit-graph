@@ -132,11 +132,12 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(decisions.insecure).toBe('all')
   })
 
-  test('skips schemes that are not part of the browsing graph', async () => {
+  test('skips non-http schemes unless asked for them', async () => {
     const decisions = await serviceWorker.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
       p.captureRules.update([])
+      p.captureRules.setAllSchemes(false)
       return [
         p.captureRules.decide('chrome://history/'),
         p.captureRules.decide('file:///Users/someone/private.pdf'),
@@ -145,6 +146,37 @@ test.describe('rex-visit-graph — real extension', () => {
     })
 
     expect(decisions).toEqual([null, null, null])
+  })
+
+  test('include_all_schemes captures them, and it is off by default', async () => {
+    const result = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({ REXConfiguration: {} })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+      const configuredDefault = p.currentConfig().include_all_schemes
+      const byDefault = p.captureRules.decide('file:///Users/someone/private.pdf')
+
+      await chrome.storage.local.set({
+        REXConfiguration: { visit_graph: { include_all_schemes: true } }
+      })
+      await p.refreshConfiguration()
+
+      return {
+        configuredDefault,
+        byDefault,
+        file: p.captureRules.decide('file:///Users/someone/private.pdf')?.id ?? null,
+        chromeUrl: p.captureRules.decide('chrome://history/')?.id ?? null,
+        stillSkipsGarbage: p.captureRules.decide('not a url'),
+      }
+    })
+
+    expect(result.configuredDefault).toBe(false)
+    expect(result.byDefault).toBeNull()
+    expect(result.file).toBe('all')
+    expect(result.chromeUrl).toBe('all')
+    // An unparseable value is still not a visit, whatever the scheme setting.
+    expect(result.stillSkipsGarbage).toBeNull()
   })
 
   test('rules narrow capture rather than enabling it', async () => {

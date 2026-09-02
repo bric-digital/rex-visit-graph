@@ -35,6 +35,7 @@ const DRAIN_ALARM = 'rex-visit-graph-drain'
 const DEFAULT_CONFIG: VisitGraphConfig = {
   enabled: true,
   capture_rules: [],
+  include_all_schemes: false,
   include_url: false,
   drain_interval_minutes: 15,
   max_hop_age_days: 7
@@ -70,6 +71,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           host_suffix: 'String, matches this host exactly or any subdomain of it.',
           path_prefix: 'String, matches when the visited path starts with this.'
         }],
+        include_all_schemes: 'Boolean, true to capture visits outside http and https '
+          + '(chrome://, file://, extension pages). False by default: those are not ordinary '
+          + 'browsing, and a local file path is a different kind of disclosure from a web page.',
         include_url: 'Boolean, true to emit the captured URL alongside the visit ids. Redacted first, '
           + "using rex-history's lists when it states any, otherwise visit_graph.redaction. When false the "
           + 'address is discarded as soon as the visit ids are resolved and is never stored.',
@@ -229,6 +233,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
       this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
       this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
+      this.captureRules.setAllSchemes(this.config.include_all_schemes)
 
       // Capture is seeded with the defaults before configuration arrives, so a
       // disabled arm can still have captured during that window. Discard it
