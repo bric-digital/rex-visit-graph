@@ -95,7 +95,12 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   }
 
   async captureVisit(item: chrome.history.HistoryItem): Promise<boolean> {
-    if (item.url === undefined) {
+    // Checked here as well as by removing the listener, deliberately. An empty
+    // rule set means "capture everything" since capture inverted, so a disabled
+    // module that reached this point would collect rather than skip. Two
+    // independent guards, and the failure direction of each is to collect
+    // nothing.
+    if (!this.config.enabled || item.url === undefined) {
       return false
     }
 
@@ -232,7 +237,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
    */
   updateConfiguration(section: Partial<VisitGraphConfig> | undefined, history?: RedactionLists): void {
     this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
-    this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
+    this.captureRules.update(this.config.capture_rules)
     this.captureRules.setSchemes(this.config.schemes)
     this.redactor.update(resolveRedactionLists(history, this.config.redaction))
 

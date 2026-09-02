@@ -877,6 +877,32 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(calls).toBe(1)
   })
 
+  test('a disabled module captures nothing even if captureVisit is called directly', async () => {
+    // Chris, 2026-09-02: "if something goofs up the gate check for some reason,
+    // we're gathering data when we shouldn't be." Removing the listener is the
+    // outer guard; this is the inner one. Both must hold independently.
+    const stored = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { enabled: false } } })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await p.refreshConfiguration()
+
+      const real = chrome.history.getVisits
+      chrome.history.getVisits = async () => ([
+        { id: '1', visitId: '77', referringVisitId: '76', visitTime: Date.now(), transition: 'link', isLocal: true }
+      ]) as never
+      try {
+        await p.captureVisit({ id: '1', url: 'https://example.com/anything' })
+      } finally {
+        chrome.history.getVisits = real
+      }
+
+      return (await p.hopStore.readAll()).length
+    })
+
+    expect(stored).toBe(0)
+  })
+
   test('a disabled module holds no listener at all', async () => {
     const states = await serviceWorker.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
