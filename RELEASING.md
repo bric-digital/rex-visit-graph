@@ -58,9 +58,7 @@ Ordinary semver, read from the perspective of an extension that installs this mo
 - **Minor** — new capability that an existing consumer can ignore. A new config key with a safe default, a new message.
 - **Patch** — a fix with no config or data-shape change.
 
-The 1.0.0 line is drawn where capture inverted from "rules enable" to "rules narrow". Anything before it was pre-release, so 1.0.0 is the first version worth pinning.
-
-2.0.0 replaces the boolean `include_url` with `url_detail` (`none` / `path` / `full`) and adds `debug`. A consumer setting `include_url` gets the default instead of what it asked for, which is why this is a major rather than a minor.
+1.0.0 is the module at first launch. It was tagged once before launch and then moved, while the only consumer was an unmerged branch — safe then, and not something to repeat: once a study is running against a tag, the tag is frozen and a change gets a new number.
 
 ## No published artifact
 
