@@ -38,7 +38,7 @@ Four small files, each with one job. The whole module is about 300 lines.
 2. **Is it interesting?** `CaptureRules.match()` compares the URL against the configured rules. Host must match exactly or be a true subdomain; path must start with the prefix. No match, nothing happens — the overwhelmingly common case.
 3. **Resolve its ids.** The `HistoryItem` `onVisited` provides carries *no* visit id and no referrer, so `VisitLookup.newestVisit()` calls `chrome.history.getVisits({url})` and takes the newest visit. This is the step that yields `visitId` and `referringVisitId`.
 4. **Store it.** `HopStore.record()` writes one record under `rexVisitGraphHop:<visitId>`. Nothing is emitted yet: points must not be dispatched before configuration exists, and the visit may have happened before configuration loaded.
-5. **Drain.** On its alarm, or when a host sends `triggerVisitGraphDrain`, the module reads every stored hop, dispatches one `rex-visit-graph-hop` point each, then deletes them. Any address kept under `url_detail` is redacted first.
+5. **Drain**, when the host sends `triggerVisitGraphDrain`: sweep anything past `max_hop_age_days`, dispatch one `rex-visit-graph-hop` point per remaining record, then delete them. Any address kept under `url_detail` is redacted first.
 6. **Analysis joins.** The landing page's `referring_visit_id` now names a row that exists, and that row's own referrer reaches the SERP.
 
 ### Why capture and emission are separated
@@ -67,7 +67,6 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 | `url_detail` | string | No | `"none"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
 | `debug` | boolean | No | `false` | Forces `url_detail` to `"full"` in any build, for diagnosing a deployment |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
-| `drain_interval_minutes` | number | No | `15` | How often stored hops are emitted (Chrome clamps to 1 minute) |
 | `max_hop_age_days` | number | No | `7` | Age after which an un-emitted hop is discarded |
 
 Each entry in `capture_rules` is an object:
@@ -127,7 +126,6 @@ One caveat to weigh before enabling it: a Google hop's own host is `google.com`,
     "schemes": ["http", "https"],
     "url_detail": "none",
     "debug": false,
-    "drain_interval_minutes": 15,
     "max_hop_age_days": 7
   }
 }
@@ -224,12 +222,13 @@ Two conventions it deliberately does **not** follow, both because it has no UI:
 ## Design notes
 
 - **Capture never waits; emission always does.** A hop not captured while it happens is unrecoverable, so the listener runs before configuration exists and with the default rules already seeded. Points are dispatched only at drain, after configuration is available.
-- **Listeners register at module scope, in the worker script's first turn.** A `chrome.history` or `chrome.alarms` listener added after a top-level `await` is registered too late to wake an evicted MV3 worker. A spec asserts this against the source, because the failure appears only on a cold start in the field.
 - **One storage key per hop.** A single shared array lets concurrent handlers overwrite each other, which presents as the listener never firing.
 - **Emit, then forget.** A worker killed between the two re-emits next cycle; the other order loses the hop. Duplicates are recoverable in analysis, losses are not.
 - **`enabled: false` stops everything, not just capture.** No rules match, no drain alarm is scheduled, `drain()` refuses even when a host calls `triggerVisitGraphDrain` on its own cadence, and anything captured in the window before configuration arrived is discarded rather than held against a later re-enable.
 - **A study that narrows gets only what it asked for.** Until configuration arrives the module has no rules and captures everything under `all`. When configuration then narrows capture, those provisional hops are discarded rather than emitted: they cannot be re-tested against the arriving rules, because the address they would be tested on was dropped at capture. The window is small, since configuration is read from rex-core's cache within milliseconds of worker start.
-- **A correctly scheduled drain alarm is left alone.** A host extension may refresh configuration far more often than the drain interval; re-creating the alarm each time restarts its countdown, and a drain scheduled further out than the refresh cadence would never fire.
+- **The module owns no alarm.** The host extension decides what runs when and drives draining with `triggerVisitGraphDrain`. A module scheduling itself would be invisible in the host's accounting of its own schedule. A host that never asks will accumulate hops until `max_hop_age_days` discards them.
+- **Configuration is applied by a synchronous `updateConfiguration()`.** `refreshConfiguration()` fetches from rex-core and hands over this module's section; `updateConfiguration()` assigns and returns. So a host or a test can configure the module directly, with no server round trip to fake.
+- **Listeners are registered in `setup()`, once**, and capture is gated on `enabled` when the event arrives rather than by adding and removing listeners.
 - **The in-progress guard is in memory, never persisted**, so a killed worker cannot strand it and wedge every later drain.
 
 ## Tests

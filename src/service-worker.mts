@@ -18,13 +18,10 @@
  */
 
 import rexCorePlugin, { REXServiceWorkerModule, registerREXModule, dispatchEvent } from '@bric/rex-core/service-worker'
-import type { REXConfiguration } from '@bric/rex-core/common'
 import { CAPTURE_ALL, CaptureRules, DEFAULT_SCHEMES, urlAtDetail, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
 import { newestVisit } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
-
-const DRAIN_ALARM = 'rex-visit-graph-drain'
 
 /**
  * No capture rules by default: the module captures the whole graph, and a study
@@ -38,7 +35,6 @@ const DEFAULT_CONFIG: VisitGraphConfig = {
   schemes: [...DEFAULT_SCHEMES],
   url_detail: 'none',
   debug: false,
-  drain_interval_minutes: 15,
   max_hop_age_days: 7
 }
 
@@ -51,6 +47,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
   /** In-memory, never persisted: a fresh worker restarts with it clear. */
   private draining = false
+
+  /** setup() may run more than once; the listener is added only the first time. */
+  private listening = false
 
   moduleName(): string {
     return 'VisitGraph'
@@ -81,8 +80,6 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           + 'states any, otherwise visit_graph.redaction.',
         debug: 'Boolean, forces url_detail to full in any build, for diagnosing a deployment. Logs a '
           + 'warning while it is on so a configuration left in this state is visible.',
-        drain_interval_minutes: 'Number, minutes between emitting stored hops. Chrome clamps alarms to a '
-          + 'one minute minimum.',
         max_hop_age_days: 'Number, days after which a hop that was never emitted is discarded.',
         redaction: {
           allow_lists: ['String, rex-lists list name. Applied only when rex-history states no lists.'],
@@ -227,126 +224,92 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     this.draining = value
   }
 
-  // CJK Note: The host extension should have FULL CONTROL over the alarms. Modules
-  // shouldn't be freelancing and adding their own alarms.
-
   /**
-   * Leave a correctly scheduled alarm alone.
-   *
-   * A host extension may refresh configuration far more often than the drain
-   * interval. Clearing and re-creating the alarm on every refresh restarts its
-   * countdown, so a drain scheduled further out than the refresh cadence would
-   * never fire and hops would accumulate unemitted.
+   * Assigns configuration. Synchronous on purpose: a test, a host, or another
+   * module can hand this module its settings directly, with no server round trip
+   * and nothing to fake. Anything asynchronous a change implies is the caller's,
+   * immediately after — see reconcileStore.
    */
-  private async scheduleDrain(): Promise<void> {
-    const existing = await chrome.alarms.get(DRAIN_ALARM)
-
-    if (!this.config.enabled) {
-      if (existing !== undefined) {
-        await chrome.alarms.clear(DRAIN_ALARM)
-      }
-
-      return
-    }
-
-    if (existing !== undefined && existing.periodInMinutes === this.config.drain_interval_minutes) {
-      return
-    }
-
-    await chrome.alarms.clear(DRAIN_ALARM)
-    await chrome.alarms.create(DRAIN_ALARM, {
-      periodInMinutes: this.config.drain_interval_minutes,
-      delayInMinutes: this.config.drain_interval_minutes
-    })
+  updateConfiguration(section: Partial<VisitGraphConfig> | undefined, history?: RedactionLists): void {
+    this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
+    this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
+    this.captureRules.setSchemes(this.config.schemes)
+    this.redactor.update(resolveRedactionLists(history, this.config.redaction))
   }
 
-  // CJK Note: Setting variables should be in an updateConfiguration (see rex-spider) so that 
-  // configuration may be updated through other channels and not JUST the server-provided config.
-  // This method should get the relevant config dict from the overall config, THEN call updateConfiguration
-  // with it.
+  /**
+   * Settle what is already stored against the configuration now in force.
+   *
+   * Until configuration arrives the module has no rules and captures everything
+   * under CAPTURE_ALL; those provisional hops are resolved here.
+   */
+  async reconcileStore(): Promise<void> {
+    if (!this.config.enabled) {
+      const discarded = await this.hopStore.clear()
 
-  async refreshConfiguration(): Promise<void> {
-    try {
-      const configuration = await rexCorePlugin.fetchConfiguration() as REXConfiguration | undefined
-      const section = (configuration as Record<string, unknown> | undefined)?.['visit_graph'] as Partial<VisitGraphConfig> | undefined
-
-      this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
-      this.captureRules.update(this.config.enabled ? this.config.capture_rules : [])
-      this.captureRules.setSchemes(this.config.schemes)
-
-      // Until configuration arrives the module has no rules, so it captures
-      // everything under CAPTURE_ALL. Those provisional hops are reconciled here.
-      if (!this.config.enabled) {
-        const discarded = await this.hopStore.clear()
-
-        if (discarded > 0) {
-          console.log(`[rex-visit-graph] Disabled; discarded ${discarded} hop(s) captured before configuration.`)
-        }
-      } else if (this.captureRules.isNarrowed()) {
-        // A study that narrows asked for less, so give it less. These cannot be
-        // re-matched against the arriving rules: the address they would be tested
-        // on was discarded at capture, which is the point of not holding one.
-        const discarded = await this.hopStore.forgetByRule(CAPTURE_ALL.id)
-
-        if (discarded > 0) {
-          console.log(`[rex-visit-graph] Narrowed by configuration; discarded ${discarded} hop(s) `
-            + 'captured before it arrived.')
-        }
+      if (discarded > 0) {
+        console.log(`[rex-visit-graph] Disabled; discarded ${discarded} hop(s) captured before configuration.`)
       }
 
-      const history = (configuration as Record<string, unknown> | undefined)?.['history'] as RedactionLists | undefined
-      this.redactor.update(resolveRedactionLists(history, this.config.redaction))
+      return
+    }
 
-      await this.scheduleDrain()
+    if (this.captureRules.isNarrowed()) {
+      // A study that narrows asked for less, so give it less. These cannot be
+      // re-matched against the arriving rules: the address they would be tested
+      // on was discarded at capture, which is the point of not holding one.
+      const discarded = await this.hopStore.forgetByRule(CAPTURE_ALL.id)
+
+      if (discarded > 0) {
+        console.log(`[rex-visit-graph] Narrowed by configuration; discarded ${discarded} hop(s) `
+          + 'captured before it arrived.')
+      }
+    }
+  }
+
+  /** rex-core's activation hook: fetch, then hand this module's own section over. */
+  async refreshConfiguration(): Promise<void> {
+    try {
+      const all = await rexCorePlugin.fetchConfiguration() as Record<string, unknown> | undefined
+
+      this.updateConfiguration(
+        all?.['visit_graph'] as Partial<VisitGraphConfig> | undefined,
+        all?.['history'] as RedactionLists | undefined
+      )
+
+      await this.reconcileStore()
     } catch (error) {
       console.error('[rex-visit-graph] Failed to load configuration:', error)
     }
   }
 
-  // CJK Note: See note above about config changes. We shouldn't be relying on a config stored in 
-  // local storage HERE, but delegate that to REX-Core so those decisions can be made consistently
-  // for ALL extensions at a common level.
-
   async setup(): Promise<void> {
     console.log('[rex-visit-graph/service-worker] Setting up visit graph capture')
 
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local') return
-      if (changes['REXConfiguration'] !== undefined) {
-        this.refreshConfiguration().catch((error) => {
-          console.error('[rex-visit-graph] Failed to react to configuration change:', error)
+    // Registered here rather than at module scope, and once only: rex-core calls
+    // setup() at registration, so this must not accumulate listeners if called
+    // again. Capture is gated on `enabled` at the moment the event arrives, not
+    // at the moment the listener is added, so turning the module off in
+    // configuration stops collection without needing the listener removed.
+    if (!this.listening) {
+      this.listening = true
+
+      chrome.history.onVisited.addListener((item) => {
+        if (!this.config.enabled) {
+          return
+        }
+
+        this.captureVisit(item).catch((error) => {
+          console.error('[rex-visit-graph] Capture failed:', error)
         })
-      }
-    })
+      })
+    }
 
     await this.refreshConfiguration()
   }
 }
 
 const plugin = new VisitGraphServiceWorkerModule()
-
-// CJK Note: This listener should be set up in the setup() function, subject to whether the extension
-// is configured to be enabled or not, NOT at this level where they're listening regardless of whether the
-// extension is enabled.
-
-// Both listeners are registered here, at module scope, in the first turn of the
-// worker script. A chrome.history or chrome.alarms listener added after an await
-// is registered too late to wake an evicted worker, and the waking event is lost.
-chrome.history.onVisited.addListener((item) => {
-  plugin.captureVisit(item).catch((error) => {
-    console.error('[rex-visit-graph] Capture failed:', error)
-  })
-})
-
-// CJK Note: This listener should not exist - see alarm comments above.
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === DRAIN_ALARM) {
-    plugin.drain().catch((error) => {
-      console.error('[rex-visit-graph] Drain error:', error)
-    })
-  }
-})
 
 registerREXModule(plugin)
 

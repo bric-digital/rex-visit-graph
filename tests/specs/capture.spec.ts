@@ -428,7 +428,6 @@ test.describe('rex-visit-graph — real extension', () => {
             enabled: true,
             capture_rules: [{ id: 'example', host_suffix: 'example.com', path_prefix: '/r' }],
             url_detail: 'none',
-            drain_interval_minutes: 5,
             max_hop_age_days: 3
           }
         }
@@ -441,42 +440,6 @@ test.describe('rex-visit-graph — real extension', () => {
 
     expect(config.capture_rules).toHaveLength(1)
     expect(config.capture_rules[0].id).toBe('example')
-    expect(config.drain_interval_minutes).toBe(5)
-  })
-
-  test('repeated configuration refreshes do not postpone the drain', async () => {
-    // A host extension may refresh configuration far more often than the drain
-    // interval — AI-Extension does it every minute against a 15-minute drain. If
-    // each refresh re-created the alarm, its countdown would restart every time
-    // and the drain would never fire, so hops would accumulate and never emit.
-    const times = await serviceWorker.evaluate(async () => {
-      await chrome.storage.local.set({ REXConfiguration: {} })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const p = (self as any).rexVisitGraphPlugin
-      await p.refreshConfiguration()
-      const first = (await chrome.alarms.get('rex-visit-graph-drain'))?.scheduledTime
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      await p.refreshConfiguration()
-      const second = (await chrome.alarms.get('rex-visit-graph-drain'))?.scheduledTime
-      return { first, second }
-    })
-
-    expect(times.first).toBeDefined()
-    expect(times.second).toBe(times.first)
-  })
-
-  test('changing the drain interval does reschedule the alarm', async () => {
-    const period = await serviceWorker.evaluate(async () => {
-      await chrome.storage.local.set({
-        REXConfiguration: { visit_graph: { drain_interval_minutes: 3 } }
-      })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const p = (self as any).rexVisitGraphPlugin
-      await p.refreshConfiguration()
-      return (await chrome.alarms.get('rex-visit-graph-drain'))?.periodInMinutes
-    })
-
-    expect(period).toBe(3)
   })
 
   test('triggerVisitGraphDrain emits stored hops and answers with the count', async () => {
@@ -518,7 +481,6 @@ test.describe('rex-visit-graph — real extension', () => {
             enabled: true,
             capture_rules: rules,
             url_detail: 'full',
-            drain_interval_minutes: 15,
             max_hop_age_days: 7
           }
         }
@@ -546,7 +508,6 @@ test.describe('rex-visit-graph — real extension', () => {
             enabled: false,
             capture_rules: rules,
             url_detail: 'none',
-            drain_interval_minutes: 15,
             max_hop_age_days: 7
           }
         }
@@ -590,14 +551,12 @@ test.describe('rex-visit-graph — real extension', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         emitted: (self as any).__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-hop').length,
         stillStored: (await p.hopStore.readAll()).length,
-        alarm: await chrome.alarms.get('rex-visit-graph-drain'),
       }
     }, GOOGLE_RULES)
 
     expect(result.emitted).toBe(0)
     expect(result.viaMessage).toBe(0)
     expect(result.viaAlarm).toBe(0)
-    expect(result.alarm).toBeUndefined()
     // Nothing captured while disabled may sit waiting for a later re-enable.
     expect(result.stillStored).toBe(0)
   })
@@ -834,27 +793,87 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(result.detail).toBe('full')
   })
 
+  test('updateConfiguration applies settings without a server round trip', async () => {
+    // Synchronous and directly callable, which is the point: a host or a test can
+    // configure the module without a served config to fetch.
+    const result = await serviceWorker.evaluate((rules) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      const returned = p.updateConfiguration({ capture_rules: rules, url_detail: 'path' })
+
+      return {
+        isPromise: returned instanceof Promise,
+        detail: p.currentConfig().url_detail,
+        narrowed: p.captureRules.isNarrowed(),
+        matches: p.captureRules.decide('https://www.google.com/goto?u=1')?.id ?? null,
+      }
+    }, GOOGLE_RULES)
+
+    expect(result.isPromise).toBe(false)
+    expect(result.detail).toBe('path')
+    expect(result.narrowed).toBe(true)
+    expect(result.matches).toBe('google-goto')
+  })
+
+  test('the module owns no alarm; the host drives draining', async () => {
+    const alarms = await serviceWorker.evaluate(async () => {
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: {} } })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (self as any).rexVisitGraphPlugin.refreshConfiguration()
+      return (await chrome.alarms.getAll()).map((a) => a.name)
+    })
+
+    // The host extension owns what runs when; a module scheduling itself would be
+    // invisible in that accounting.
+    expect(alarms.filter((n: string) => n.includes('visit-graph'))).toEqual([])
+  })
+
   // -------------------------------------------------------------------------
   // Listener registration
   // -------------------------------------------------------------------------
 
-  test('registers its history listener in the first turn of the worker script', () => {
-    // A chrome.history listener added after the worker script's first turn is
-    // registered too late to wake an evicted MV3 worker, and the waking event is
-    // dropped. That failure only appears on a cold start in the field, never in a
-    // spec that drives one continuous worker lifetime, so it is guarded here at
-    // the source.
-    //
-    // Only TOP-LEVEL await delays registration. An await inside a class method
-    // body runs when that method is called, not at import, so the pattern is
-    // anchored to column zero: `^await`, not `^\s*await`.
+  test('registers its history listener in setup(), not at module scope', async () => {
+    // Chris's position, 2026-09-02: listeners belong in setup() and are gated on
+    // whether the module is enabled, rather than listening regardless. Asserted
+    // against the source because the alternative shape is invisible at runtime —
+    // both register a listener; they differ in when and under what conditions.
+    const fs = await import('node:fs')
     const source = fs.readFileSync(path.join(__dirname, '../../src/service-worker.mts'), 'utf8')
-    const listenerAt = source.search(/^chrome\.history\.onVisited\.addListener/m)
-    const topLevelAwaitAt = source.search(/^await /m)
 
-    expect(listenerAt, 'listener must be registered at module scope, not indented inside a function')
-      .toBeGreaterThan(-1)
-    expect(topLevelAwaitAt === -1 || listenerAt < topLevelAwaitAt,
-      'no top-level await may precede the listener registration').toBe(true)
+    const setupAt = source.indexOf('async setup()')
+    const listenerAt = source.indexOf('chrome.history.onVisited.addListener')
+    const classEndsAt = source.indexOf('const plugin = new VisitGraphServiceWorkerModule()')
+
+    expect(listenerAt).toBeGreaterThan(setupAt)
+    expect(listenerAt).toBeLessThan(classEndsAt)
+    // Nothing may register a listener at module scope.
+    expect(source.slice(classEndsAt).includes('addListener')).toBe(false)
+    // And the module schedules nothing of its own.
+    expect(source.includes('chrome.alarms.create')).toBe(false)
+  })
+
+  test('setup() called twice does not stack listeners', async () => {
+    const captured = await serviceWorker.evaluate(async (rules) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      await chrome.storage.local.set({ REXConfiguration: { visit_graph: { capture_rules: rules } } })
+      await p.setup()
+      await p.setup()
+
+      const real = chrome.history.getVisits
+      let calls = 0
+      chrome.history.getVisits = async () => {
+        calls += 1
+        return [{ id: '1', visitId: '5', referringVisitId: '4', visitTime: Date.now(), transition: 'link', isLocal: true }] as never
+      }
+      try {
+        await p.captureVisit({ id: '1', url: 'https://www.google.com/goto?u=1' })
+      } finally {
+        chrome.history.getVisits = real
+      }
+      return calls
+    }, GOOGLE_RULES)
+
+    expect(captured).toBe(1)
   })
 })

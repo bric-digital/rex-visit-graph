@@ -48,7 +48,6 @@ export interface VisitGraphConfig {
   url_detail: UrlDetail;
   /** Forces `url_detail` to `full` in any build, for diagnosing a deployment. */
   debug: boolean;
-  drain_interval_minutes: number;
   max_hop_age_days: number;
   /** Used only when rex-history states no lists of its own. */
   redaction?: RedactionLists;
