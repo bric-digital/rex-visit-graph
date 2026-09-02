@@ -1,6 +1,14 @@
 # rex-visit-graph
 
-REX module that records the browser's visit graph, including the visits `chrome.history.search()` omits, so referral chains resolve. 
+REX module that records the browser's visit graph, including the visits `chrome.history.search()` omits, so referral chains resolve.
+
+**Current release: `v1.0.0`.** Pin it:
+
+```json
+"@bric/rex-visit-graph": "github:bric-digital/rex-visit-graph#v1.0.0"
+```
+
+`package.json` on `main` carries a `-dev` version between releases (`1.0.1-dev` means past 1.0.0, not yet 1.0.1), so the repo never names a release that was not cut. Releases and what the numbers mean: [RELEASING.md](RELEASING.md). 
 
 If your study needs to document which pages referred the browser to a target page, you may need this module. 
 

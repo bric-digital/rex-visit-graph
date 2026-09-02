@@ -27,13 +27,20 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rawVersion = process.argv[2];
 
-function incrementPatchVersion(version) {
+/**
+ * The next development version, marked `-dev`.
+ *
+ * A bare `1.0.1` sitting in package.json between releases claims to be a release
+ * that was never cut, and anyone reading the repo believes it. `1.0.1-dev` says
+ * plainly: past 1.0.0, not yet 1.0.1.
+ */
+function nextDevelopmentVersion(version) {
   const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
   if (!match) {
     throw new Error(`Cannot derive next version from ${version}.`);
   }
   const [, major, minor, patch] = match;
-  return `${major}.${minor}.${Number.parseInt(patch, 10) + 1}`;
+  return `${major}.${minor}.${Number.parseInt(patch, 10) + 1}-dev`;
 }
 
 const git = (args, opts = {}) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', ...opts });
@@ -44,8 +51,8 @@ if (!rawVersion) {
 
 const version = rawVersion.startsWith('v') ? rawVersion.slice(1) : rawVersion;
 
-if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-  throw new Error(`Invalid version: ${rawVersion}`);
+if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  throw new Error(`Invalid version: ${rawVersion}. A release is X.Y.Z, without a -dev suffix.`);
 }
 
 const tagName = `v${version}`;
@@ -73,13 +80,14 @@ const branchName = git(['branch', '--show-current']).trim();
 
 git(['tag', '-a', tagName, '-m', `Release ${tagName}`], { stdio: 'inherit' });
 
-pkg.version = incrementPatchVersion(version);
+pkg.version = nextDevelopmentVersion(version);
 await writeFile(packagePath, `${JSON.stringify(pkg, null, 4)}\n`);
 
 git(['add', 'package.json'], { stdio: 'inherit' });
 git(['commit', '-m', `start v${pkg.version} development`], { stdio: 'inherit' });
 
 console.log(`\nCreated tag ${tagName}.`);
-console.log(`Bumped package.json to ${pkg.version}.`);
+console.log(`Bumped package.json to ${pkg.version} — marked -dev so the repo never `
+  + 'names a release that was not cut.');
 console.log(`Push with: git push origin ${branchName || 'main'} --follow-tags`);
 console.log(`Consumers pin with: "github:bric-digital/rex-visit-graph#${tagName}"`);

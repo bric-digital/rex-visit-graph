@@ -30,7 +30,9 @@ The version in `package.json` is the source of truth.
    npm run release:tag -- 1.0.0
    ```
 
-   The script refuses unless `package.json` already says `1.0.0`, then creates an annotated tag `v1.0.0` and bumps `package.json` to `1.0.1`, committing that as "start v1.0.1 development".
+   The script refuses unless `package.json` already says `1.0.0`, then creates an annotated tag `v1.0.0` and bumps `package.json` to `1.0.1-dev`, committing that as "start v1.0.1-dev development".
+
+   The `-dev` suffix matters. A bare `1.0.1` sitting on `main` between releases claims to be a release nobody cut, and anyone reading the repo believes it. `1.0.1-dev` says exactly what is true: past 1.0.0, not yet 1.0.1.
 4. Push the branch and the tag together:
 
    ```
@@ -49,6 +51,17 @@ npm run build
 ```
 
 Check the lockfile resolved to the tag's sha, and that the change reached the bundle, before trusting it.
+
+## Where the version is stated
+
+Three places, and they should agree:
+
+| Where | Says |
+|---|---|
+| the git tag | the release itself — this is what consumers pin |
+| `package.json` on `main` | `X.Y.Z-dev`, the unreleased state past the last tag |
+| `package.json` at the tag | `X.Y.Z`, with no suffix |
+| README, at the top | the current release, for anyone reading rather than installing |
 
 ## What the numbers mean
 
