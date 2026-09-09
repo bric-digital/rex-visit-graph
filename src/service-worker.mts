@@ -23,16 +23,20 @@ import { newestVisit } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
 import { CaptureLists } from './capture-lists.mjs'
+import { collectorCanSee } from './history-visibility.mjs'
 
 /**
- * No capture rules by default: the module captures the whole graph, and a study
- * narrows it if it wants less. Naming sites here would make the module's default
- * a client override, and would leave any redirector nobody has seen yet silently
- * uncollected — which is the failure this module exists to end.
+ * Scoped by default to the visits rex-history's collector cannot see, and not
+ * narrowed further. Naming sites here would make the module's default a client
+ * override, and would leave any redirector nobody has seen yet silently
+ * uncollected — which is the failure this module exists to end. Scope catches
+ * those without naming them: being absent from history search is what makes a
+ * visit a redirect intermediate.
  */
 const DEFAULT_CONFIG: VisitGraphConfig = {
   enabled: true,
   capture_rules: [],
+  capture_scope: 'hops',
   schemes: [...DEFAULT_SCHEMES],
   url_detail: 'none',
   debug: false,
@@ -67,6 +71,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       visit_graph: {
         enabled: 'Boolean, true if module is active, false otherwise. When false nothing is captured, '
           + 'nothing is emitted even if a host asks, and anything already captured is discarded.',
+        capture_scope: "String: 'hops' (default) captures only visits rex-history's collector cannot "
+          + "see, which is the redirect intermediates this module exists for. 'all' captures the whole "
+          + 'visit graph, which duplicates ids rex-history already reports and costs a visit lookup on '
+          + 'every navigation. Change to all only to restore the earlier behaviour.',
         capture_rules: [{
           id: 'String, label emitted with each captured hop so rules can be told apart in analysis.',
           host_suffix: 'String, matches this host exactly or any subdomain of it.',
@@ -121,6 +129,14 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     // Ahead of the visit lookup, which is the expensive call: an excluded host
     // should cost nothing to exclude.
     if (!(await this.captureLists.permits(item.url))) {
+      return false
+    }
+
+    // Also ahead of it, and for the same reason. A visit rex-history can see is
+    // one it already reports with these same ids, so capturing it would spend a
+    // full getVisits() to duplicate a record we send anyway.
+    if (this.config.capture_scope !== 'all'
+      && await collectorCanSee(item.url, item.lastVisitTime ?? Date.now())) {
       return false
     }
 

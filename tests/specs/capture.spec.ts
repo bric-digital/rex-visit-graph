@@ -979,7 +979,10 @@ test.describe('rex-visit-graph — real extension', () => {
       p.updateConfiguration({ enabled: false })
       await chrome.history.addUrl({ url })
 
-      p.updateConfiguration(config)
+      // Scope is pinned to 'all' because these cover the lists, not the scope.
+      // Under the default scope the seeded visit is one history can see, so
+      // every case here would skip for that reason and prove nothing about lists.
+      p.updateConfiguration({ ...config, capture_scope: 'all' })
 
       let lookups = 0
       const realGetVisits = chrome.history.getVisits
@@ -1064,5 +1067,96 @@ test.describe('rex-visit-graph — real extension', () => {
     // Premise for every negative case above: this URL is capturable by default,
     // so the false results are the lists acting and not some other refusal.
     expect(result.captured).toBe(true)
+  })
+
+  // -------------------------------------------------------------------------
+  // Capture scope
+  //
+  // Driven through a real redirect rather than a synthesised HistoryItem: what
+  // is under test is Chrome's own treatment of a redirect chain, and a hand-made
+  // item would let the test pass while the real distinction failed.
+  // -------------------------------------------------------------------------
+
+  test.describe('capture scope', () => {
+    const PORT = 8793
+    const ORIGIN = `http://127.0.0.1:${PORT}`
+    let server: import('http').Server
+
+    test.beforeAll(async () => {
+      const http = await import('http')
+      server = http.createServer((req, res) => {
+        const url = new URL(req.url ?? '/', ORIGIN)
+
+        if (url.pathname === '/start') {
+          res.writeHead(200, { 'content-type': 'text/html' })
+          res.end('<!doctype html><meta charset="utf-8"><a id="go" href="/hop">go</a>')
+          return
+        }
+
+        if (url.pathname === '/hop') {
+          res.writeHead(302, { location: '/landing' })
+          res.end()
+          return
+        }
+
+        res.writeHead(200, { 'content-type': 'text/html' })
+        res.end(`<!doctype html><meta charset="utf-8"><h1>${url.pathname}</h1>`)
+      })
+      await new Promise<void>((resolve) => server.listen(PORT, '127.0.0.1', resolve))
+    })
+
+    test.afterAll(async () => {
+      // close() alone waits on keep-alive sockets the browser is holding open,
+      // which outlasts the hook timeout.
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    /** Click through start -> hop (302) -> landing, then report what was kept. */
+    async function walkRedirect(scope: 'hops' | 'all') {
+      await serviceWorker.evaluate(async (scope) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        p.updateConfiguration({ capture_scope: scope, url_detail: 'full' })
+        const stored = await chrome.storage.local.get()
+        const keys = Object.keys(stored).filter((k) => k.startsWith('rexVisitGraphHop:'))
+        if (keys.length > 0) await chrome.storage.local.remove(keys)
+      }, scope)
+
+      const tab = await context.newPage()
+      await tab.goto(`${ORIGIN}/start`)
+      await tab.click('#go')
+      await tab.waitForLoadState('load')
+      await tab.waitForTimeout(700)
+      await tab.close()
+
+      return serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        const records = await p.hopStore.readAll()
+        return records.map((r: { url: string | null }) => r.url)
+      })
+    }
+
+    test("scope 'hops' keeps the redirect and drops the pages history can see", async () => {
+      const urls = await walkRedirect('hops')
+
+      // The hop is the whole point: no collector can see it any other way.
+      expect(urls).toContain(`${ORIGIN}/hop`)
+      // These two are returned by history.search(), so rex-history reports them
+      // already, with the same visit ids this module would have emitted.
+      expect(urls).not.toContain(`${ORIGIN}/start`)
+      expect(urls).not.toContain(`${ORIGIN}/landing`)
+    })
+
+    test("scope 'all' still captures everything, so a study can revert", async () => {
+      const urls = await walkRedirect('all')
+
+      // Premise for the test above: without the scope these ARE captured, so the
+      // absences there are the scope acting rather than a navigation that never
+      // happened.
+      expect(urls).toContain(`${ORIGIN}/hop`)
+      expect(urls).toContain(`${ORIGIN}/landing`)
+    })
   })
 })
