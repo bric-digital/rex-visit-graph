@@ -31,6 +31,13 @@ export interface VisitGraphConfig {
   enabled: boolean;
   capture_rules: CaptureRule[];
   /**
+   * Lists deciding whether a visit is captured at all, named as rex-lists lists.
+   * Distinct from `redaction`, which decides what a captured address looks like.
+   * See capture-lists.mts for the precedence and the failure directions.
+   */
+  capture_allow_lists?: string[];
+  capture_block_lists?: string[];
+  /**
    * Schemes to capture, matched case-insensitively and without the trailing
    * colon. Defaults to http and https. A study wanting ftp, file or webdav names
    * them here rather than waiting for a boolean per scheme.

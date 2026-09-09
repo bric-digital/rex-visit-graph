@@ -22,6 +22,7 @@ import { CAPTURE_ALL, CaptureRules, DEFAULT_SCHEMES, urlAtDetail, type UrlDetail
 import { newestVisit } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
+import { CaptureLists } from './capture-lists.mjs'
 
 /**
  * No capture rules by default: the module captures the whole graph, and a study
@@ -40,6 +41,7 @@ const DEFAULT_CONFIG: VisitGraphConfig = {
 
 class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   readonly captureRules = new CaptureRules()
+  readonly captureLists = new CaptureLists()
   readonly hopStore = new HopStore()
   readonly redactor = new UrlRedactor()
 
@@ -81,6 +83,12 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         debug: 'Boolean, forces url_detail to full in any build, for diagnosing a deployment. Logs a '
           + 'warning while it is on so a configuration left in this state is visible.',
         max_hop_age_days: 'Number, days after which a hop that was never emitted is discarded.',
+        capture_block_lists: ['String, rex-lists list name. A visit matching any of these is not '
+          + 'captured at all. Takes precedence over capture_allow_lists. A list that cannot be read '
+          + 'blocks, so an unreadable list captures less rather than more.'],
+        capture_allow_lists: ['String, rex-lists list name. When any are named, only visits matching '
+          + 'one of them are captured. Decides whether a visit is captured; redaction below decides '
+          + 'what a captured address looks like.'],
         redaction: {
           allow_lists: ['String, rex-lists list name. Applied only when rex-history states no lists.'],
           filter_lists: ['String, rex-lists list name. Applied only when rex-history states no lists.'],
@@ -107,6 +115,12 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     const rule = this.captureRules.decide(item.url)
 
     if (rule === null) {
+      return false
+    }
+
+    // Ahead of the visit lookup, which is the expensive call: an excluded host
+    // should cost nothing to exclude.
+    if (!(await this.captureLists.permits(item.url))) {
       return false
     }
 
@@ -239,6 +253,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     this.config = { ...DEFAULT_CONFIG, ...(section ?? {}) }
     this.captureRules.update(this.config.capture_rules)
     this.captureRules.setSchemes(this.config.schemes)
+    this.captureLists.update(this.config)
     this.redactor.update(resolveRedactionLists(history, this.config.redaction))
 
     // Listening follows the enabled flag: a disabled module holds no listener at

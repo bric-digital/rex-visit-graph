@@ -950,4 +950,119 @@ test.describe('rex-visit-graph — real extension', () => {
     // ...and the disabled configuration then takes the listener away again.
     expect(listening.afterFetch).toBe(false)
   })
+
+  // -------------------------------------------------------------------------
+  // Capture lists
+  //
+  // Whether a visit is captured at all, as distinct from the redaction lists
+  // above, which decide what a captured address looks like. Seeded as real
+  // rex-lists entries in real IndexedDB, so these exercise the same matching
+  // path a study's server-synced lists would.
+  // -------------------------------------------------------------------------
+
+  const BLOCKED = 'https://dashboard.example.com/participant'
+  const ORDINARY = 'https://www.google.com/goto?url=CAESUgHrOzAV'
+
+  /**
+   * Captures one visit and reports both the outcome and whether the visit
+   * lookup was reached, since the gate is only worth having if it runs before
+   * the expensive call.
+   */
+  async function tryCapture(url: string, config: Record<string, unknown>) {
+    return serviceWorker.evaluate(async ({ url, config }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+
+      // Seed with the listener off, so recording the visit does not capture it
+      // through onVisited before the spec calls captureVisit itself. The visit
+      // has to exist for the lookup to resolve ids at all.
+      p.updateConfiguration({ enabled: false })
+      await chrome.history.addUrl({ url })
+
+      p.updateConfiguration(config)
+
+      let lookups = 0
+      const realGetVisits = chrome.history.getVisits
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(chrome.history as any).getVisits = (details: { url: string }) => {
+        lookups++
+        return realGetVisits.call(chrome.history, details)
+      }
+
+      try {
+        const captured = await p.captureVisit({ url, title: '', lastVisitTime: Date.now(), visitCount: 1, typedCount: 0, id: '1' })
+        return { captured, lookups }
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(chrome.history as any).getVisits = realGetVisits
+      }
+    }, { url, config })
+  }
+
+  async function seedList(listName: string, pattern: string) {
+    await serviceWorker.evaluate(async ({ listName, pattern }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lists = (self as any).__listUtils
+      await lists.deleteAllEntriesInList(listName, 'generated')
+      await lists.bulkCreateListEntries([
+        { list_name: listName, pattern, pattern_type: 'domain', source: 'generated', metadata: {} }
+      ])
+    }, { listName, pattern })
+  }
+
+  test('a visit on a block list is not captured, and costs no visit lookup', async () => {
+    await seedList('vg-block', 'example.com')
+
+    const result = await tryCapture(BLOCKED, { capture_block_lists: ['vg-block'] })
+
+    expect(result.captured).toBe(false)
+    // The gate has to sit ahead of getVisits, which is the 1.3-1.5s call this
+    // whole change exists to avoid paying on an excluded host.
+    expect(result.lookups).toBe(0)
+  })
+
+  test('a visit not on the block list is still captured', async () => {
+    await seedList('vg-block', 'example.com')
+
+    const result = await tryCapture(ORDINARY, { capture_block_lists: ['vg-block'] })
+
+    expect(result.captured).toBe(true)
+  })
+
+  test('with an allow list configured, a non-matching visit is not captured', async () => {
+    await seedList('vg-allow', 'google.com')
+
+    const result = await tryCapture(BLOCKED, { capture_allow_lists: ['vg-allow'] })
+
+    expect(result.captured).toBe(false)
+    expect(result.lookups).toBe(0)
+  })
+
+  test('with an allow list configured, a matching visit is captured', async () => {
+    await seedList('vg-allow', 'google.com')
+
+    const result = await tryCapture(ORDINARY, { capture_allow_lists: ['vg-allow'] })
+
+    expect(result.captured).toBe(true)
+  })
+
+  test('a block list wins over an allow list naming the same host', async () => {
+    await seedList('vg-allow', 'google.com')
+    await seedList('vg-block', 'google.com')
+
+    const result = await tryCapture(ORDINARY, {
+      capture_allow_lists: ['vg-allow'],
+      capture_block_lists: ['vg-block']
+    })
+
+    expect(result.captured).toBe(false)
+  })
+
+  test('no capture lists leaves capture exactly as it was', async () => {
+    const result = await tryCapture(BLOCKED, {})
+
+    // Premise for every negative case above: this URL is capturable by default,
+    // so the false results are the lists acting and not some other refusal.
+    expect(result.captured).toBe(true)
+  })
 })
