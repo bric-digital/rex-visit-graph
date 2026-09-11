@@ -182,11 +182,6 @@ export class TabOpenerTracker {
     this.pending.clear()
   }
 
-  /** Readable for diagnostics and tests. */
-  pendingCount(): number {
-    return this.pending.size
-  }
-
   /**
    * The opener tab's current visit, or null when it has no page worth
    * attributing to: a blank tab, an extension page, a host without the `tabs`
