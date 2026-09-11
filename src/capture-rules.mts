@@ -70,6 +70,11 @@ export interface VisitGraphConfig {
    *        Available so a study can go back without a Web Store release.
    */
   capture_scope: CaptureScope;
+  /**
+   * Whether a new tab's first visit is attributed to the page that opened it.
+   * Chrome records no referrer across a tab boundary; see tab-opener.mts.
+   */
+  tab_opener_edges: boolean;
   /** Forces `url_detail` to `full` in any build, for diagnosing a deployment. */
   debug: boolean;
   max_hop_age_days: number;

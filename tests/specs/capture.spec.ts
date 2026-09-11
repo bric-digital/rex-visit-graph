@@ -1159,4 +1159,252 @@ test.describe('rex-visit-graph — real extension', () => {
       expect(urls).toContain(`${ORIGIN}/landing`)
     })
   })
+
+  // -------------------------------------------------------------------------
+  // Tab opener edges
+  //
+  // Chrome records no referring visit across a tab boundary, so a result opened
+  // in a new tab arrives with referringVisitId "0". These drive real new tabs
+  // from a real page, because what is under test is what Chrome exposes on
+  // chrome.tabs when a page opens one; a synthesised event would pass while the
+  // real signal changed shape. Measured 2026-09-10: openerTabId is always
+  // present, pendingUrl is not, and tabs.onUpdated carries the committed URL.
+  // -------------------------------------------------------------------------
+
+  test.describe('tab opener edges', () => {
+    const PORT = 8794
+    const ORIGIN = `http://127.0.0.1:${PORT}`
+    let server: import('http').Server
+
+    test.beforeAll(async () => {
+      const http = await import('http')
+      server = http.createServer((req, res) => {
+        const url = new URL(req.url ?? '/', ORIGIN)
+
+        if (url.pathname === '/start') {
+          res.writeHead(200, { 'content-type': 'text/html' })
+          res.end('<!doctype html><meta charset="utf-8">'
+            + '<a id="same" href="/landing-same">same</a>'
+            + '<a id="blank" href="/landing-blank" target="_blank">blank</a>'
+            + '<a id="redirect" href="/hop" target="_blank">redirect</a>'
+            + '<button id="open-empty" onclick="var w = window.open(\'\'); '
+            + 'setTimeout(function () { w.location = \'/landing-open-empty\' }, 200)">open</button>')
+          return
+        }
+
+        if (url.pathname === '/hop') {
+          res.writeHead(302, { location: '/landing-redirect' })
+          res.end()
+          return
+        }
+
+        res.writeHead(200, { 'content-type': 'text/html' })
+        res.end(`<!doctype html><meta charset="utf-8"><h1>${url.pathname}</h1>`)
+      })
+      await new Promise<void>((resolve) => server.listen(PORT, '127.0.0.1', resolve))
+    })
+
+    test.afterAll(async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    test.beforeEach(async () => {
+      await serviceWorker.evaluate(async () => {
+        const keys = (await chrome.storage.local.getKeys())
+          .filter((key) => key.startsWith('rexVisitGraphHop:') || key.startsWith('rexVisitGraphOpener:'))
+        if (keys.length > 0) await chrome.storage.local.remove(keys)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(self as any).__capturedEvents = []
+      })
+    })
+
+    /** The newest visit Chrome holds for a URL, as analysis would see it. */
+    async function newestVisit(url: string) {
+      return serviceWorker.evaluate(async (url) => {
+        const visits = await chrome.history.getVisits({ url })
+        const newest = visits.reduce((best, v) => (best === null || (v.visitTime ?? 0) > (best.visitTime ?? 0) ? v : best), null as chrome.history.VisitItem | null)
+        return newest === null ? null : { visitId: newest.visitId, referringVisitId: newest.referringVisitId }
+      }, url)
+    }
+
+    /**
+     * Load /start, open a link from it, wait for the new tab to land, then
+     * report what the module stored and what Chrome recorded.
+     */
+    async function openFromStart(selector: string, landing: string, config: Record<string, unknown> = {}) {
+      await serviceWorker.evaluate((config) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(self as any).rexVisitGraphPlugin.updateConfiguration({ url_detail: 'full', ...config })
+      }, config)
+
+      const tab = await context.newPage()
+      await tab.goto(`${ORIGIN}/start`)
+      const startVisit = await newestVisit(`${ORIGIN}/start`)
+
+      const opened = context.waitForEvent('page', { timeout: 5000 }).catch(() => null)
+      await tab.click(selector)
+      const newTab = await opened
+      await (newTab ?? tab).waitForLoadState('load').catch(() => {})
+      await tab.waitForTimeout(1200)
+
+      const stored = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        return {
+          openers: await p.openerStore.readAll(),
+          hops: await p.hopStore.readAll(),
+        }
+      })
+
+      await newTab?.close().catch(() => {})
+      await tab.close()
+
+      return { startVisit, landingVisit: await newestVisit(`${ORIGIN}${landing}`), ...stored }
+    }
+
+    test('a link opened in a new tab is attributed to the page that opened it', async () => {
+      const result = await openFromStart('#blank', '/landing-blank')
+
+      // Premise: Chrome itself recorded no referrer, so anything attributing the
+      // landing came from this module and not from the browser.
+      expect(result.landingVisit?.referringVisitId).toBe('0')
+
+      expect(result.openers).toHaveLength(1)
+      expect(result.openers[0].visit_id).toBe(result.landingVisit?.visitId)
+      expect(result.openers[0].opener_visit_id).toBe(result.startVisit?.visitId)
+      expect(result.openers[0].url).toBe(`${ORIGIN}/landing-blank`)
+    })
+
+    test('a same-tab link records no opener edge, since Chrome attributes it already', async () => {
+      const result = await openFromStart('#same', '/landing-same')
+
+      // Positive control for the test above: the same click in the same tab
+      // IS attributed by Chrome, so the "0" there is the tab boundary acting.
+      expect(result.landingVisit?.referringVisitId).toBe(result.startVisit?.visitId)
+      expect(result.openers).toHaveLength(0)
+    })
+
+    test('a tab opened blank and then navigated is attributed to its opener', async () => {
+      const result = await openFromStart('#open-empty', '/landing-open-empty')
+
+      expect(result.landingVisit?.referringVisitId).toBe('0')
+      expect(result.openers).toHaveLength(1)
+      expect(result.openers[0].visit_id).toBe(result.landingVisit?.visitId)
+      expect(result.openers[0].opener_visit_id).toBe(result.startVisit?.visitId)
+    })
+
+    test('the drained edge attaches to the redirect hop, so landing -> hop -> opener closes', async () => {
+      const result = await openFromStart('#redirect', '/landing-redirect')
+      const hopVisit = await newestVisit(`${ORIGIN}/hop`)
+
+      // Chrome's own chain: landing refers to the hop, and the hop refers to
+      // nothing, because the hop was the first page in the new tab.
+      expect(result.landingVisit?.referringVisitId).toBe(hopVisit?.visitId)
+      expect(hopVisit?.referringVisitId).toBe('0')
+      // The hop is captured as usual under the default scope.
+      expect(result.hops.map((h: { visit_id: string }) => h.visit_id)).toContain(hopVisit?.visitId)
+
+      const events = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(self as any).__capturedEvents = []
+        await p.drain()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (self as any).__capturedEvents
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const openerPoints = events.filter((e: any) => e.name === 'rex-visit-graph-opener')
+      expect(openerPoints).toHaveLength(1)
+      // Attached to the root of the chain in the new tab, which is where Chrome
+      // recorded "0", rather than to the landing page.
+      expect(openerPoints[0].visit_id).toBe(hopVisit?.visitId)
+      expect(openerPoints[0].referring_visit_id).toBe(result.startVisit?.visitId)
+      expect(openerPoints[0].url).toBe(`${ORIGIN}/hop`)
+      // And the hop itself still goes out as a hop.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(events.filter((e: any) => e.name === 'rex-visit-graph-hop').map((e: any) => e.visit_id)).toContain(hopVisit?.visitId)
+    })
+
+    test('the drained edge carries ids and the configured address detail', async () => {
+      const result = await openFromStart('#blank', '/landing-blank', { url_detail: 'none' })
+
+      const events = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(self as any).__capturedEvents = []
+        await p.drain()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (self as any).__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-opener')
+      })
+
+      expect(events).toHaveLength(1)
+      expect(events[0].visit_id).toBe(result.landingVisit?.visitId)
+      expect(events[0].referring_visit_id).toBe(result.startVisit?.visitId)
+      expect(events[0].url).toBeUndefined()
+      // The address is not held either, not merely not emitted.
+      expect(result.openers[0].url).toBeNull()
+
+      const remaining = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (await (self as any).rexVisitGraphPlugin.openerStore.readAll()).length
+      })
+      expect(remaining).toBe(0)
+    })
+
+    test('capture rules narrow opener edges the way they narrow hops', async () => {
+      const result = await openFromStart('#blank', '/landing-blank', {
+        capture_rules: [{ id: 'elsewhere', host_suffix: 'example.com', path_prefix: '/' }]
+      })
+
+      expect(result.landingVisit?.referringVisitId).toBe('0')
+      expect(result.openers).toHaveLength(0)
+    })
+
+    test('tab_opener_edges: false records nothing and holds no tabs listener', async () => {
+      const result = await openFromStart('#blank', '/landing-blank', { tab_opener_edges: false })
+
+      expect(result.landingVisit?.referringVisitId).toBe('0')
+      expect(result.openers).toHaveLength(0)
+
+      const listening = await serviceWorker.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        const whenOff = p.isListeningForTabs()
+        p.updateConfiguration({ tab_opener_edges: true })
+        const whenOn = p.isListeningForTabs()
+        p.updateConfiguration({ enabled: false })
+        const whenDisabled = p.isListeningForTabs()
+        p.updateConfiguration({})
+        return { whenOff, whenOn, whenDisabled, byDefault: p.isListeningForTabs() }
+      })
+
+      expect(listening.whenOff).toBe(false)
+      expect(listening.whenOn).toBe(true)
+      expect(listening.whenDisabled).toBe(false)
+      expect(listening.byDefault).toBe(true)
+    })
+
+    test('disabling the module discards stored opener edges too', async () => {
+      const remaining = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        await p.openerStore.put({
+          visit_id: '9', referring_visit_id: '0', opener_visit_id: '3', visit_time: Date.now(),
+          url: null, capture_rule: 'all', transition: 'link'
+        })
+        await chrome.storage.local.set({ REXConfiguration: { visit_graph: { enabled: false } } })
+        await p.refreshConfiguration()
+        const afterDisable = (await p.openerStore.readAll()).length
+        await chrome.storage.local.set({ REXConfiguration: {} })
+        await p.refreshConfiguration()
+        return afterDisable
+      })
+
+      expect(remaining).toBe(0)
+    })
+  })
 })
