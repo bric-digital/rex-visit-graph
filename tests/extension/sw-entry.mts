@@ -6,6 +6,7 @@
  * EventCaptureModule so specs can assert on dispatched points without a server.
  */
 import rexCorePlugin, { registerREXModule, REXServiceWorkerModule } from '@bric/rex-core/service-worker'
+import * as listUtils from '@bric/rex-lists'
 import plugin from '../../src/service-worker.mjs'
 
 chrome.runtime.onMessage.addListener(rexCorePlugin.handleMessage)
@@ -26,6 +27,10 @@ class EventCaptureModule extends REXServiceWorkerModule {
 }
 
 g.__capturedEvents = []
+// Specs seed real rex-lists entries so capture-list matching runs against the
+// real IndexedDB path rather than a stand-in that could pass while the real one
+// fails.
+g.__listUtils = listUtils
 registerREXModule(new EventCaptureModule())
 
 g.rexVisitGraphPlugin = plugin

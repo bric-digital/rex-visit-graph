@@ -1,11 +1,16 @@
 /**
  * Which visits are worth capturing.
  *
- * The module captures the whole visit graph. Rules are a NARROWING filter, not an
- * allowlist: with none configured every http(s) visit is captured, and a study
- * that wants less states rules to reduce it. That way a redirector nobody has
- * seen yet is captured anyway, rather than going silently uncollected until
- * somebody notices the data is missing.
+ * Capture is bounded first by `capture_scope`, which defaults to the visits
+ * rex-history's collector cannot see. An unknown redirector is still caught
+ * without anyone naming it, because being invisible to `chrome.history.search()`
+ * is what makes something a redirect intermediate. See history-visibility.mts.
+ *
+ * Within that, rules are a NARROWING filter, not an allowlist: with none
+ * configured every visit in scope is captured, and a study that wants less
+ * states rules to reduce it. That way a redirector nobody has seen yet is
+ * captured anyway, rather than going silently uncollected until somebody
+ * notices the data is missing.
  *
  * Rules arrive from server configuration so a study can change its own narrowing
  * without a Chrome Web Store release. Matching is host-suffix plus path-prefix
@@ -31,6 +36,13 @@ export interface VisitGraphConfig {
   enabled: boolean;
   capture_rules: CaptureRule[];
   /**
+   * Lists deciding whether a visit is captured at all, named as rex-lists lists.
+   * Distinct from `redaction`, which decides what a captured address looks like.
+   * See capture-lists.mts for the precedence and the failure directions.
+   */
+  capture_allow_lists?: string[];
+  capture_block_lists?: string[];
+  /**
    * Schemes to capture, matched case-insensitively and without the trailing
    * colon. Defaults to http and https. A study wanting ftp, file or webdav names
    * them here rather than waiting for a boolean per scheme.
@@ -46,6 +58,18 @@ export interface VisitGraphConfig {
    * `full`  — the whole address.
    */
   url_detail: UrlDetail;
+  /**
+   * Which visits are worth capturing at all.
+   *
+   * `hops` (default) captures only visits rex-history's collector cannot see,
+   *        which is what this module exists for. Everything else it would
+   *        capture is a record rex-history already sends, with the same
+   *        `visit_id` and `referring_visit_id`, bought with a `getVisits()`
+   *        call on every navigation.
+   * `all`  captures the whole visit graph, the behaviour before this setting.
+   *        Available so a study can go back without a Web Store release.
+   */
+  capture_scope: CaptureScope;
   /** Forces `url_detail` to `full` in any build, for diagnosing a deployment. */
   debug: boolean;
   max_hop_age_days: number;
@@ -55,6 +79,9 @@ export interface VisitGraphConfig {
 
 /** Stands in for "no narrowing configured", so every emitted hop names a rule. */
 export type UrlDetail = 'none' | 'path' | 'full'
+
+/** What the module is for, and the wider setting kept for reverting to. */
+export type CaptureScope = 'hops' | 'all'
 
 /** Ordinary browsing. Anything else is opt-in via `schemes`. */
 export const DEFAULT_SCHEMES = ['http', 'https']
