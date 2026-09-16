@@ -158,9 +158,9 @@ One `rex-visit-graph-hop` point per captured visit:
 
 No URL, title or domain: nothing about where the participant went, only that one visit led to another.
 
-### Opener edges: the new-tab break
+### Opener edges: the new-tab and new-window break
 
-**A new tab breaks the chain in a different way, and Chrome offers a different repair.** Chrome records no referring visit across a tab boundary: a middle click, a modifier click, a `target="_blank"` link or a `window.open()` produces `referring_visit_id: "0"`, not a dangling id. Measured on Chrome 152 across all six opening methods: the same-tab click linked correctly, every new-tab form did not, and `transition` read `link` throughout so it does not distinguish them either. For analysis this is worse than a redirect hop in one way: `"0"` is indistinguishable from a typed address or a bookmark, so a new-tab click looks like arrival from nowhere rather than like a break.
+**A new tab or window breaks the chain in a different way, and Chrome offers a different repair.** Chrome records no referring visit across a tab boundary, and a new window is a new tab in a new window: a middle click, a modifier click, a `target="_blank"` link, a `window.open()` or an "open in new window" produces `referring_visit_id: "0"`, not a dangling id. Measured on Chrome 152 across all six opening methods: the same-tab click linked correctly, every new-tab form did not, and `transition` read `link` throughout so it does not distinguish them either. For analysis this is worse than a redirect hop in one way: `"0"` is indistinguishable from a typed address or a bookmark, so a new-tab click looks like arrival from nowhere rather than like a break.
 
 The relationship exists only on `chrome.tabs`: the new tab's `openerTabId` names the tab it was opened from. When `tab_opener_edges` is on (the default), the module records which visit the opener tab was on when the tab was created, waits for the new tab's first committed URL, resolves that visit's id, and emits one `rex-visit-graph-opener` point:
 
