@@ -1188,7 +1188,8 @@ test.describe('rex-visit-graph — real extension', () => {
             + '<a id="blank" href="/landing-blank" target="_blank">blank</a>'
             + '<a id="redirect" href="/hop" target="_blank">redirect</a>'
             + '<button id="open-empty" onclick="var w = window.open(\'\'); '
-            + 'setTimeout(function () { w.location = \'/landing-open-empty\' }, 200)">open</button>')
+            + 'setTimeout(function () { w.location = \'/landing-open-empty\' }, 200)">open</button>'
+            + '<button id="open-window" onclick="window.open(\'/landing-window\', \'_blank\', \'popup,width=600,height=400\')">window</button>')
           return
         }
 
@@ -1287,6 +1288,17 @@ test.describe('rex-visit-graph — real extension', () => {
 
     test('a tab opened blank and then navigated is attributed to its opener', async () => {
       const result = await openFromStart('#open-empty', '/landing-open-empty')
+
+      expect(result.landingVisit?.referringVisitId).toBe('0')
+      expect(result.openers).toHaveLength(1)
+      expect(result.openers[0].visit_id).toBe(result.landingVisit?.visitId)
+      expect(result.openers[0].opener_visit_id).toBe(result.startVisit?.visitId)
+    })
+
+    test('a link opened in a new window is attributed to its opener, since a window is a tab boundary too', async () => {
+      // The popup feature string is what makes Chrome open a separate window
+      // rather than a tab; it still creates the tab with an openerTabId.
+      const result = await openFromStart('#open-window', '/landing-window')
 
       expect(result.landingVisit?.referringVisitId).toBe('0')
       expect(result.openers).toHaveLength(1)
