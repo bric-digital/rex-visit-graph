@@ -31,13 +31,15 @@ Measured against Google on 2026-09-01: twelve organic results across four querie
 
 ## How it works
 
-Four small files, each with one job. The whole module is about 300 lines.
+Small files, each with one job.
 
 | File | Responsibility |
 |------|----------------|
 | `capture-rules.mts` | Decides whether a visited URL is one we want. Pure logic, no Chrome APIs. |
 | `visit-lookup.mts` | Turns a URL into its visit ids via `chrome.history.getVisits()`. |
-| `hop-store.mts` | Holds captured hops in `chrome.storage.local` until they can be emitted. |
+| `edge-store.mts` | One key per record in `chrome.storage.local`, under a prefix per kind of edge. |
+| `hop-store.mts` | Holds captured hops until they can be emitted. |
+| `tab-opener.mts` | Attributes a new tab's first visit to the page that opened it, from `chrome.tabs`. |
 | `service-worker.mts` | The REX module itself: listeners, configuration, drain, message handling. |
 
 ### The path a hop takes
@@ -73,6 +75,7 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 | `capture_rules` | array | No | `[]` (capture everything) | Optional narrowing filter; see below |
 | `schemes` | array | No | `["http", "https"]` | Schemes to capture, without the colon, matched case-insensitively. Name others (`file`, `ftp`, `webdav`) to opt into them |
 | `url_detail` | string | No | `"none"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
+| `tab_opener_edges` | boolean | No | `true` | Attribute a new tab's first visit to the page that opened it, as `rex-visit-graph-opener` points. Needs the `tabs` permission in the host |
 | `debug` | boolean | No | `false` | Forces `url_detail` to `"full"` in any build, for diagnosing a deployment |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
 | `max_hop_age_days` | number | No | `7` | Age after which an un-emitted hop is discarded |
@@ -155,11 +158,28 @@ One `rex-visit-graph-hop` point per captured visit:
 
 No URL, title or domain: nothing about where the participant went, only that one visit led to another.
 
-**A new tab breaks the chain, and this module cannot mend it.** Chrome records no referring visit across a tab boundary: a `target="_blank"` link or a `window.open()` produces `referring_visit_id: "0"`, not a dangling id. Measured on Chrome 152 — same-tab link linked correctly, both new-tab forms did not, and `transition` read `link` for all three so it does not distinguish them either.
+### Opener edges: the new-tab and new-window break
 
-That is a different defect from the one this module addresses. A redirect hop leaves a referrer pointing at a visit Chrome hid but still holds; a new tab leaves no referrer at all, and there is nothing for `onVisited` to capture. For analysis it is worse in one way: `referring_visit_id: "0"` is indistinguishable from a typed address or a bookmark, so a new-tab click does not look broken, it looks like arrival from nowhere.
+**A new tab or window breaks the chain in a different way, and Chrome offers a different repair.** Chrome records no referring visit across a tab boundary, and a new window is a new tab in a new window: a middle click, a modifier click, a `target="_blank"` link, a `window.open()` or an "open in new window" produces `referring_visit_id: "0"`, not a dangling id. Measured on Chrome 152 across all six opening methods: the same-tab click linked correctly, every new-tab form did not, and `transition` read `link` throughout so it does not distinguish them either. For analysis this is worse than a redirect hop in one way: `"0"` is indistinguishable from a typed address or a bookmark, so a new-tab click looks like arrival from nowhere rather than like a break.
 
-Recovering it needs `chrome.tabs.onCreated`, whose `openerTabId` carries the relationship. That is a separate capability, not an extension of this one.
+The relationship exists only on `chrome.tabs`: the new tab's `openerTabId` names the tab it was opened from. When `tab_opener_edges` is on (the default), the module records which visit the opener tab was on when the tab was created, waits for the new tab's first committed URL, resolves that visit's id, and emits one `rex-visit-graph-opener` point:
+
+```json
+{
+  "visit_id": "10",
+  "referring_visit_id": "9",
+  "visit_time": 1789096044324,
+  "capture_rule": "all",
+  "transition": "link",
+  "date": 1789096044324
+}
+```
+
+The fields mean what they mean on a hop, so the two point types union into one edge list: `visit_id` is the first visit in the new tab and `referring_visit_id` is the opener's visit. When the new tab's first navigation was itself a redirect chain, `visit_id` names the chain's **root** (the hop, whose Chrome referrer is `"0"`) rather than the landing page, so `landing -> hop -> opener` walks end to end; the root is found among the hops held at drain time, and if it is not among them the edge attaches to the first committed visit instead.
+
+Capture rules, capture lists, `url_detail`, redaction and `max_hop_age_days` apply to opener edges exactly as to hops. `capture_scope` does not: the first visit in a new tab is usually one history can see, and the edge is the information rather than the visit.
+
+Reading a tab's URL needs the `tabs` permission (or a host permission covering it). A host without it records no opener edges and is otherwise unchanged. Two limits: a tab left blank for more than 30 seconds before its first navigation is not attributed, and the reservation between tab creation and first navigation is held in memory only, so a worker killed in that window (milliseconds, in every measured case) loses the edge.
 
 **The join is exact within one profile's history, and only there.** `visit_id` is a row id in Chrome's history database for that profile, so it is unique across that profile's continuous history and means nothing outside it. A participant with a second computer, or a fresh profile, produces a second id space that starts over at low numbers — so ids from the two will collide and a naive join attaches the wrong URL to the wrong edge, silently.
 
@@ -190,7 +210,7 @@ Then run `npm install`, and import the module for its side effects in your servi
 import '@bric/rex-visit-graph/service-worker'
 ```
 
-No new permission is required: `chrome.history.onVisited` is covered by `history`.
+Hop capture needs no permission beyond `history`. Opener edges read the opener tab's URL, which needs `tabs`; without it that path records nothing and the rest of the module is unaffected.
 
 ## Messages
 

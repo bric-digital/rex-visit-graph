@@ -13,6 +13,8 @@ export interface HopVisit {
   visitId: string;
   referringVisitId: string;
   visitTime: number;
+  /** Chrome's transition type for the visit, `link` for a click. */
+  transition?: string;
 }
 
 /** Holds no state, so a function rather than a class. */
@@ -35,7 +37,8 @@ export async function newestVisit(url: string): Promise<HopVisit | null> {
       url,
       visitId: newest.visitId,
       referringVisitId: newest.referringVisitId,
-      visitTime: newest.visitTime ?? Date.now()
+      visitTime: newest.visitTime ?? Date.now(),
+      transition: newest.transition
     }
   } catch (error) {
     // This runs inside an onVisited handler, where an unhandled rejection is

@@ -24,6 +24,7 @@ import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
 import { CaptureLists } from './capture-lists.mjs'
 import { collectorCanSee } from './history-visibility.mjs'
+import { OpenerStore, TabOpenerTracker, chainRoot } from './tab-opener.mjs'
 
 /**
  * Scoped by default to the visits rex-history's collector cannot see, and not
@@ -37,6 +38,7 @@ const DEFAULT_CONFIG: VisitGraphConfig = {
   enabled: true,
   capture_rules: [],
   capture_scope: 'hops',
+  tab_opener_edges: true,
   schemes: [...DEFAULT_SCHEMES],
   url_detail: 'none',
   debug: false,
@@ -47,7 +49,14 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   readonly captureRules = new CaptureRules()
   readonly captureLists = new CaptureLists()
   readonly hopStore = new HopStore()
+  readonly openerStore = new OpenerStore()
   readonly redactor = new UrlRedactor()
+  readonly tabOpeners = new TabOpenerTracker({
+    rules: this.captureRules,
+    lists: this.captureLists,
+    store: this.openerStore,
+    urlDetail: () => this.urlDetail()
+  })
 
   private config: VisitGraphConfig = DEFAULT_CONFIG
 
@@ -56,6 +65,12 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
   /** Held so it can be removed again; a listener is only removable by reference. */
   private historyListener: ((item: chrome.history.HistoryItem) => void) | null = null
+
+  private tabListeners: {
+    created: (tab: chrome.tabs.Tab) => void;
+    updated: (tabId: number, changeInfo: { url?: string }) => void;
+    removed: (tabId: number) => void;
+  } | null = null
 
   moduleName(): string {
     return 'VisitGraph'
@@ -75,6 +90,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           + "see, which is the redirect intermediates this module exists for. 'all' captures the whole "
           + 'visit graph, which duplicates ids rex-history already reports and costs a visit lookup on '
           + 'every navigation. Change to all only to restore the earlier behaviour.',
+        tab_opener_edges: 'Boolean, default true. Attributes the first visit in a new tab to the page '
+          + 'that opened it, emitted as rex-visit-graph-opener points. Chrome records no referrer across '
+          + 'a tab boundary, so without this a result opened in a new tab arrives from nowhere. Needs the '
+          + 'tabs permission in the host; without it nothing is recorded.',
         capture_rules: [{
           id: 'String, label emitted with each captured hop so rules can be told apart in analysis.',
           host_suffix: 'String, matches this host exactly or any subdomain of it.',
@@ -164,10 +183,14 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
     try {
       // Sweep first, so a record past its age is discarded rather than sent.
-      await this.hopStore.sweep(Date.now() - (this.config.max_hop_age_days * 24 * 60 * 60 * 1000))
+      const cutoff = Date.now() - (this.config.max_hop_age_days * 24 * 60 * 60 * 1000)
+      await this.hopStore.sweep(cutoff)
+      await this.openerStore.sweep(cutoff)
 
       const records = await this.hopStore.readAll()
+      const openers = await this.openerStore.readAll()
       const emitted: string[] = []
+      const emittedOpeners: string[] = []
 
       for (const record of records) {
         const url = record.url === null ? undefined : await this.redactor.redact(record.url)
@@ -185,6 +208,26 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         emitted.push(record.visit_id)
       }
 
+      // Resolved against the hops read in this same drain, so a redirect chain
+      // in the new tab attaches the edge to its root rather than its landing.
+      for (const record of openers) {
+        const root = chainRoot(record, records)
+        const url = root.url === null ? undefined : await this.redactor.redact(root.url)
+
+        dispatchEvent({
+          name: 'rex-visit-graph-opener',
+          visit_id: root.visit_id,
+          referring_visit_id: record.opener_visit_id,
+          visit_time: root.visit_time,
+          capture_rule: record.capture_rule,
+          transition: record.transition,
+          date: root.visit_time,
+          ...(url === undefined ? {} : { url })
+        })
+
+        emittedOpeners.push(record.visit_id)
+      }
+
       // Emit, then forget. A worker killed between the two re-emits next cycle;
       // killed in the other order, the hop is gone. A duplicate is recoverable
       // in analysis, a loss is not.
@@ -192,7 +235,11 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         await this.hopStore.forget(emitted)
       }
 
-      return emitted.length
+      if (emittedOpeners.length > 0) {
+        await this.openerStore.forget(emittedOpeners)
+      }
+
+      return emitted.length + emittedOpeners.length
     } catch (error) {
       console.error('[rex-visit-graph] Drain failed:', error)
       return 0
@@ -280,11 +327,64 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     } else {
       this.stopListening()
     }
+
+    if (this.config.enabled && this.config.tab_opener_edges) {
+      this.startListeningForTabs()
+    } else {
+      this.stopListeningForTabs()
+    }
   }
 
   /** True while a history listener is registered. Readable for diagnostics. */
   isListening(): boolean {
     return this.historyListener !== null
+  }
+
+  /** True while the tabs listeners are registered. Readable for diagnostics. */
+  isListeningForTabs(): boolean {
+    return this.tabListeners !== null
+  }
+
+  private startListeningForTabs(): void {
+    if (this.tabListeners !== null || typeof chrome.tabs?.onCreated?.addListener !== 'function') {
+      return
+    }
+
+    this.tabListeners = {
+      created: (tab) => {
+        this.tabOpeners.tabCreated(tab)
+      },
+      updated: (tabId, changeInfo) => {
+        // onUpdated fires for every status change of every tab; only a committed
+        // URL on a tab this module is holding is of interest.
+        if (changeInfo.url === undefined) {
+          return
+        }
+
+        this.tabOpeners.tabNavigated(tabId, changeInfo.url).catch((error) => {
+          console.error('[rex-visit-graph] Opener capture failed:', error)
+        })
+      },
+      removed: (tabId) => {
+        this.tabOpeners.tabRemoved(tabId)
+      }
+    }
+
+    chrome.tabs.onCreated.addListener(this.tabListeners.created)
+    chrome.tabs.onUpdated.addListener(this.tabListeners.updated)
+    chrome.tabs.onRemoved.addListener(this.tabListeners.removed)
+  }
+
+  private stopListeningForTabs(): void {
+    if (this.tabListeners === null) {
+      return
+    }
+
+    chrome.tabs.onCreated.removeListener(this.tabListeners.created)
+    chrome.tabs.onUpdated.removeListener(this.tabListeners.updated)
+    chrome.tabs.onRemoved.removeListener(this.tabListeners.removed)
+    this.tabListeners = null
+    this.tabOpeners.forgetAll()
   }
 
   private startListening(): void {
@@ -318,10 +418,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
    */
   async reconcileStore(): Promise<void> {
     if (!this.config.enabled) {
-      const discarded = await this.hopStore.clear()
+      const discarded = await this.hopStore.clear() + await this.openerStore.clear()
 
       if (discarded > 0) {
-        console.log(`[rex-visit-graph] Disabled; discarded ${discarded} hop(s) captured before configuration.`)
+        console.log(`[rex-visit-graph] Disabled; discarded ${discarded} edge(s) captured before configuration.`)
       }
 
       return
@@ -332,6 +432,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       // re-matched against the arriving rules: the address they would be tested
       // on was discarded at capture, which is the point of not holding one.
       const discarded = await this.hopStore.forgetByRule(CAPTURE_ALL.id)
+        + await this.openerStore.forgetByRule(CAPTURE_ALL.id)
 
       if (discarded > 0) {
         console.log(`[rex-visit-graph] Narrowed by configuration; discarded ${discarded} hop(s) `
@@ -365,6 +466,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     // again if the study has the module turned off, so a disabled module ends up
     // holding no listener and having emitted nothing.
     this.startListening()
+    this.startListeningForTabs()
 
     await this.refreshConfiguration()
   }
