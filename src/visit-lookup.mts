@@ -17,6 +17,30 @@ export interface HopVisit {
   transition?: string;
 }
 
+/**
+ * How many visits Chrome holds for a URL, without materialising them.
+ *
+ * `getVisits()` returns every visit and so costs more the more there are;
+ * `search()` returns one row per URL carrying the count. Measured 2026-09-17 on
+ * a seeded 440,000-visit URL: 16.5ms against 1075ms, and 0.1ms against 0.1ms on
+ * an ordinary one, so asking first is free where it does not matter. The
+ * reproduction is `AI-extension-testing/one-off/measure_opener_lookup_cost.mjs`.
+ *
+ * Returns null when the count cannot be established, which callers read as "no
+ * answer" rather than as zero.
+ */
+export async function visitCount(url: string): Promise<number | null> {
+  try {
+    const items = await chrome.history.search({ text: url, maxResults: 10 })
+    const match = items.find((item) => item.url === url)
+
+    return match?.visitCount ?? null
+  } catch (error) {
+    console.warn('[rex-visit-graph] visit count lookup failed:', error)
+    return null
+  }
+}
+
 /** Holds no state, so a function rather than a class. */
 export async function newestVisit(url: string): Promise<HopVisit | null> {
   try {

@@ -80,6 +80,7 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 | `schemes` | array | No | `["http", "https"]` | Schemes to capture, without the colon, matched case-insensitively. Name others (`file`, `ftp`, `webdav`) to opt into them |
 | `url_detail` | string | No | `"none"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
 | `tab_opener_edges` | boolean | No | `true` | Attribute a new tab's first visit to the page that opened it, as `rex-visit-graph-opener` points. Needs the `tabs` permission in the host |
+| `max_opener_visits` | number | No | `25000` | Ceiling on an opener page's visit count. Above it the page is not looked up, so tabs it opens get no opener edge. `getVisits()` cannot be bounded and costs ~1s on a page that re-records a visit every few seconds, charged per new tab. `0` removes the ceiling |
 | `debug` | boolean | No | `false` | Forces `url_detail` to `"full"` in any build, for diagnosing a deployment |
 | `redaction` | object | No | - | `allow_lists`, `filter_lists`, `domain_only_lists`; used only when rex-history states none |
 | `max_hop_age_days` | number | No | `7` | Age after which an un-emitted hop is discarded |

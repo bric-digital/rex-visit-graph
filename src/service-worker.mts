@@ -40,6 +40,12 @@ const DEFAULT_CONFIG: VisitGraphConfig = {
   capture_rules: [],
   capture_scope: 'hops',
   tab_opener_edges: true,
+  // Chosen from the measured cost, which scales with the count: 440,000 visits
+  // resolve in ~1075ms, so ~2.4us each, and 25,000 is about 60ms. Above any
+  // organic page — visiting one 20 times a day for three years is ~22,000 — and
+  // reached in under a day by a page that re-records every few seconds. It is a
+  // judgement, not a finding, which is why it is server config.
+  max_opener_visits: 25_000,
   schemes: [...DEFAULT_SCHEMES],
   url_detail: 'none',
   debug: false,
@@ -57,7 +63,8 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     rules: this.captureRules,
     lists: this.captureLists,
     store: this.openerStore,
-    urlDetail: () => this.urlDetail()
+    urlDetail: () => this.urlDetail(),
+    maxOpenerVisits: () => this.config.max_opener_visits
   })
 
   private config: VisitGraphConfig = DEFAULT_CONFIG
@@ -96,6 +103,11 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           + 'that opened it, emitted as rex-visit-graph-opener points. Chrome records no referrer across '
           + 'a tab boundary, so without this a result opened in a new tab arrives from nowhere. Needs the '
           + 'tabs permission in the host; without it nothing is recorded.',
+        max_opener_visits: 'Number, default 25000. A page with more visits than this is not looked '
+          + 'up when it opens a tab, so no opener edge is recorded for tabs it opens. getVisits() '
+          + 'cannot be bounded and costs about a second on a page that re-records a visit every few '
+          + 'seconds, charged per new tab. Raise it to keep attribution on a heavily revisited page, '
+          + 'lower it if lookups are still costing participants, 0 to remove the ceiling entirely.',
         capture_rules: [{
           id: 'String, label emitted with each captured hop so rules can be told apart in analysis.',
           host_suffix: 'String, matches this host exactly or any subdomain of it.',

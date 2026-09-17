@@ -75,6 +75,15 @@ export interface VisitGraphConfig {
    * Chrome records no referrer across a tab boundary; see tab-opener.mts.
    */
   tab_opener_edges: boolean;
+  /**
+   * Ceiling on an opener page's visit count, above which it is not looked up.
+   *
+   * `getVisits()` takes no time range and no limit, so its cost scales with how
+   * many visits a URL has ever had. A page that re-records a visit every few
+   * seconds reaches a size where resolving it costs about a second, and the
+   * opener path pays that on every new tab. Non-positive disables the ceiling.
+   */
+  max_opener_visits: number;
   /** Forces `url_detail` to `full` in any build, for diagnosing a deployment. */
   debug: boolean;
   max_hop_age_days: number;

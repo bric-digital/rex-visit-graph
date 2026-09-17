@@ -1256,6 +1256,15 @@ test.describe('rex-visit-graph — real extension', () => {
           return
         }
 
+        // Opens a tab, for testing the opener visit ceiling. Same host is fine
+        // here: what varies is the opener's visit count, not its name.
+        if (url.pathname === '/start-ceiling') {
+          res.writeHead(200, { 'content-type': 'text/html' })
+          res.end('<!doctype html><meta charset="utf-8">'
+            + '<a id="blank" href="/landing-ceiling" target="_blank">blank</a>')
+          return
+        }
+
         // Opens a tab on a different host from its own, so a block list can name
         // the opener without also naming what it opens. Same server either way.
         if (url.pathname === '/start-cross') {
@@ -1419,6 +1428,78 @@ test.describe('rex-visit-graph — real extension', () => {
       await seedList('vg-opener-block', 'example.invalid')
 
       const result = await openFromBlockedOpener()
+
+      expect(result.lookedUp).toContain(result.opener)
+      expect(result.openers).toHaveLength(1)
+    })
+
+    /**
+     * Opens a tab from an opener visited enough times to test a ceiling against.
+     *
+     * Two visits and a ceiling of one, rather than a seeded 440,000-visit
+     * profile: what is under test is the comparison and where it sits relative to
+     * the lookup, and both are the same at either scale. The cost that motivates
+     * the ceiling is measured separately, in
+     * `AI-extension-testing/one-off/measure_opener_lookup_cost.mjs`.
+     */
+    async function openWithCeiling(maxOpenerVisits: number) {
+      const opener = `http://127.0.0.1:${PORT}/start-ceiling`
+
+      await serviceWorker.evaluate(async ({ opener, maxOpenerVisits }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const g = self as any
+        g.rexVisitGraphPlugin.updateConfiguration({ url_detail: 'full', max_opener_visits: maxOpenerVisits })
+
+        // A second visit, so the count exceeds a ceiling of one. The navigation
+        // below supplies the first.
+        await chrome.history.addUrl({ url: opener })
+
+        g.__lookedUp = []
+        g.__realGetVisits = chrome.history.getVisits
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(chrome.history as any).getVisits = (details: { url: string }) => {
+          g.__lookedUp.push(details.url)
+          return g.__realGetVisits.call(chrome.history, details)
+        }
+      }, { opener, maxOpenerVisits })
+
+      const tab = await context.newPage()
+      await tab.goto(opener)
+
+      const opened = context.waitForEvent('page', { timeout: 5000 }).catch(() => null)
+      await tab.click('#blank')
+      const newTab = await opened
+      await (newTab ?? tab).waitForLoadState('load').catch(() => {})
+      await tab.waitForTimeout(1200)
+
+      const result = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const g = self as any
+        ;(chrome.history as any).getVisits = g.__realGetVisits
+        return {
+          openers: await g.rexVisitGraphPlugin.openerStore.readAll(),
+          lookedUp: g.__lookedUp as string[]
+        }
+      })
+
+      await newTab?.close().catch(() => {})
+      await tab.close()
+
+      return { opener, ...result }
+    }
+
+    test('an opener past the visit ceiling is not looked up, and records no edge', async () => {
+      const result = await openWithCeiling(1)
+
+      expect(result.lookedUp).not.toContain(result.opener)
+      expect(result.openers).toHaveLength(0)
+    })
+
+    test('a ceiling of 0 removes the limit, so a study can turn it off', async () => {
+      // Premise for the test above: the same walk with the ceiling disabled DOES
+      // look the opener up and record the edge, so the absences there are the
+      // ceiling acting rather than a fixture that never opened a tab.
+      const result = await openWithCeiling(0)
 
       expect(result.lookedUp).toContain(result.opener)
       expect(result.openers).toHaveLength(1)
