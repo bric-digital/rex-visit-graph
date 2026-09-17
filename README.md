@@ -36,6 +36,8 @@ Small files, each with one job.
 | File | Responsibility |
 |------|----------------|
 | `capture-rules.mts` | Decides whether a visited URL is one we want. Pure logic, no Chrome APIs. |
+| `history-visibility.mts` | Asks whether rex-history's collector can already see a visit. |
+| `deferred-visits.mts` | Holds the visits whose visibility could not be decided yet. |
 | `visit-lookup.mts` | Turns a URL into its visit ids via `chrome.history.getVisits()`. |
 | `edge-store.mts` | One key per record in `chrome.storage.local`, under a prefix per kind of edge. |
 | `hop-store.mts` | Holds captured hops until they can be emitted. |
@@ -46,10 +48,12 @@ Small files, each with one job.
 
 1. **A visit happens.** `chrome.history.onVisited` fires for *every* visit, including the redirect intermediates `search()` hides. The listener is registered at module scope (see Design notes) and does nothing but hand the item to the module.
 2. **Is it interesting?** `CaptureRules.match()` compares the URL against the configured rules. Host must match exactly or be a true subdomain; path must start with the prefix. No match, nothing happens — the overwhelmingly common case.
-3. **Resolve its ids.** The `HistoryItem` `onVisited` provides carries *no* visit id and no referrer, so `VisitLookup.newestVisit()` calls `chrome.history.getVisits({url})` and takes the newest visit. This is the step that yields `visitId` and `referringVisitId`.
-4. **Store it.** `HopStore.record()` writes one record under `rexVisitGraphHop:<visitId>`. Nothing is emitted yet: points must not be dispatched before configuration exists, and the visit may have happened before configuration loaded.
-5. **Drain**, when the host sends `triggerVisitGraphDrain`: sweep anything past `max_hop_age_days`, dispatch one `rex-visit-graph-hop` point per remaining record, then delete them. Any address kept under `url_detail` is redacted first.
-6. **Analysis joins.** The landing page's `referring_visit_id` now names a row that exists, and that row's own referrer reaches the SERP.
+3. **Can history already see it?** At the default `capture_scope: 'hops'`, `collectorCanSee()` probes `chrome.history.search()` over a narrow window around the visit. A visit it returns is one rex-history collects with these same ids, so capturing it would duplicate a row we already send.
+4. **If it can, ask again after the next visit.** A client-side redirector — `location.replace`, a meta refresh — is a real document, so it is an ordinary visit that `search()` returns until the moment it redirects, and Chrome hides it only once it has. Deciding on that first answer drops it from every export. So a visit that looks visible is held in memory by `DeferredVisits` and re-probed when the next visit arrives, which for a redirect is its own landing page, milliseconds later. Whatever is still held is settled at drain.
+5. **Resolve its ids.** The `HistoryItem` `onVisited` provides carries *no* visit id and no referrer, so `VisitLookup.newestVisit()` calls `chrome.history.getVisits({url})` and takes the newest visit. This is the step that yields `visitId` and `referringVisitId`.
+6. **Store it.** `HopStore.record()` writes one record under `rexVisitGraphHop:<visitId>`. Nothing is emitted yet: points must not be dispatched before configuration exists, and the visit may have happened before configuration loaded.
+7. **Drain**, when the host sends `triggerVisitGraphDrain`: sweep anything past `max_hop_age_days`, dispatch one `rex-visit-graph-hop` point per remaining record, then delete them. Any address kept under `url_detail` is redacted first.
+8. **Analysis joins.** The landing page's `referring_visit_id` now names a row that exists, and that row's own referrer reaches the SERP.
 
 ### Why capture and emission are separated
 

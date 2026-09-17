@@ -1089,13 +1089,34 @@ test.describe('rex-visit-graph — real extension', () => {
 
         if (url.pathname === '/start') {
           res.writeHead(200, { 'content-type': 'text/html' })
-          res.end('<!doctype html><meta charset="utf-8"><a id="go" href="/hop">go</a>')
+          res.end('<!doctype html><meta charset="utf-8">'
+            + '<a id="go" href="/hop">go</a>'
+            + '<a id="client" href="/client-hop">client</a>'
+            + '<a id="meta" href="/meta-hop">meta</a>')
           return
         }
 
         if (url.pathname === '/hop') {
           res.writeHead(302, { location: '/landing' })
           res.end()
+          return
+        }
+
+        // A redirector that is a real document and replaces itself once its
+        // script runs. History search returns it until it does, which is why it
+        // needs a second look rather than the one the 302 above needs.
+        if (url.pathname === '/client-hop') {
+          res.writeHead(200, { 'content-type': 'text/html' })
+          res.end('<!doctype html><meta charset="utf-8">'
+            + '<script>location.replace("/client-landing")</script>')
+          return
+        }
+
+        // The same shape, driven by the parser rather than by script.
+        if (url.pathname === '/meta-hop') {
+          res.writeHead(200, { 'content-type': 'text/html' })
+          res.end('<!doctype html><meta charset="utf-8">'
+            + '<meta http-equiv="refresh" content="0;url=/meta-landing">')
           return
         }
 
@@ -1112,8 +1133,8 @@ test.describe('rex-visit-graph — real extension', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     })
 
-    /** Click through start -> hop (302) -> landing, then report what was kept. */
-    async function walkRedirect(scope: 'hops' | 'all') {
+    /** Click through start -> hop -> landing, then report what was kept. */
+    async function walkRedirect(scope: 'hops' | 'all', linkId: string = 'go') {
       await serviceWorker.evaluate(async (scope) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const p = (self as any).rexVisitGraphPlugin
@@ -1125,7 +1146,7 @@ test.describe('rex-visit-graph — real extension', () => {
 
       const tab = await context.newPage()
       await tab.goto(`${ORIGIN}/start`)
-      await tab.click('#go')
+      await tab.click(`#${linkId}`)
       await tab.waitForLoadState('load')
       await tab.waitForTimeout(700)
       await tab.close()
@@ -1157,6 +1178,36 @@ test.describe('rex-visit-graph — real extension', () => {
       // happened.
       expect(urls).toContain(`${ORIGIN}/hop`)
       expect(urls).toContain(`${ORIGIN}/landing`)
+    })
+
+    // A client-side redirector is a document, so unlike a 302 it is an ordinary
+    // visit at the moment onVisited fires and history search returns it. Chrome
+    // reclassifies it once the replacement happens, after which no collector
+    // enumerating with search() can see it. Deciding on the first answer drops
+    // the hop from every export.
+    test("scope 'hops' keeps a redirect done with location.replace", async () => {
+      const urls = await walkRedirect('hops', 'client')
+
+      expect(urls).toContain(`${ORIGIN}/client-hop`)
+      expect(urls).not.toContain(`${ORIGIN}/client-landing`)
+    })
+
+    test("scope 'hops' keeps a redirect done with a meta refresh", async () => {
+      const urls = await walkRedirect('hops', 'meta')
+
+      expect(urls).toContain(`${ORIGIN}/meta-hop`)
+      expect(urls).not.toContain(`${ORIGIN}/meta-landing`)
+    })
+
+    test("scope 'all' captures the client redirects too", async () => {
+      // Premise for the two above, the same way the 302 has one: these are
+      // captured when the scope is not applied, so a miss under 'hops' is the
+      // scope deciding rather than a navigation that never happened.
+      const viaScript = await walkRedirect('all', 'client')
+      expect(viaScript).toContain(`${ORIGIN}/client-hop`)
+
+      const viaMeta = await walkRedirect('all', 'meta')
+      expect(viaMeta).toContain(`${ORIGIN}/meta-hop`)
     })
   })
 

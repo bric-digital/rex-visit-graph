@@ -18,12 +18,13 @@
  */
 
 import rexCorePlugin, { REXServiceWorkerModule, registerREXModule, dispatchEvent } from '@bric/rex-core/service-worker'
-import { CAPTURE_ALL, CaptureRules, DEFAULT_SCHEMES, urlAtDetail, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
+import { CAPTURE_ALL, CaptureRules, DEFAULT_SCHEMES, urlAtDetail, type CaptureRule, type UrlDetail, type VisitGraphConfig } from './capture-rules.mjs'
 import { newestVisit } from './visit-lookup.mjs'
 import { HopStore } from './hop-store.mjs'
 import { UrlRedactor, resolveRedactionLists, type RedactionLists } from './redaction.mjs'
 import { CaptureLists } from './capture-lists.mjs'
 import { collectorCanSee } from './history-visibility.mjs'
+import { DeferredVisits, type DeferredVisit } from './deferred-visits.mjs'
 import { OpenerStore, TabOpenerTracker, chainRoot } from './tab-opener.mjs'
 
 /**
@@ -50,6 +51,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   readonly captureLists = new CaptureLists()
   readonly hopStore = new HopStore()
   readonly openerStore = new OpenerStore()
+  readonly deferredVisits = new DeferredVisits()
   readonly redactor = new UrlRedactor()
   readonly tabOpeners = new TabOpenerTracker({
     rules: this.captureRules,
@@ -145,21 +147,89 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       return false
     }
 
+    const at = item.lastVisitTime ?? Date.now()
+    const deferring = this.config.capture_scope !== 'all'
+    const candidate = { url: item.url, at, rule }
+
+    // These two run in one synchronous turn, in this order, before any await.
+    // Taking first is what stops this visit from answering its own question;
+    // holding before the first await is what lets the next visit find it, since
+    // Chrome orders onVisited only across handlers' synchronous parts.
+    const pending = deferring ? this.deferredVisits.takeAll() : []
+
+    if (deferring) {
+      this.deferredVisits.hold(candidate)
+    }
+
+    // Everything pending has now had a further navigation happen after it, so a
+    // client redirect it was part of has completed.
+    await this.reconsider(pending)
+
     // Ahead of the visit lookup, which is the expensive call: an excluded host
     // should cost nothing to exclude.
     if (!(await this.captureLists.permits(item.url))) {
+      this.deferredVisits.drop(candidate)
       return false
     }
 
     // Also ahead of it, and for the same reason. A visit rex-history can see is
     // one it already reports with these same ids, so capturing it would spend a
     // full getVisits() to duplicate a record we send anyway.
-    if (this.config.capture_scope !== 'all'
-      && await collectorCanSee(item.url, item.lastVisitTime ?? Date.now())) {
+    //
+    // Left held rather than discarded: a client redirector is still visible at
+    // this moment and stops being visible once it redirects, so the answer here
+    // is provisional. The next visit asks again.
+    if (deferring && await collectorCanSee(item.url, at)) {
       return false
     }
 
-    const visit = await newestVisit(item.url)
+    this.deferredVisits.drop(candidate)
+
+    return this.storeVisit(item.url, rule)
+  }
+
+  /** Capture the ones that have stopped being visible since they were held. */
+  private async reconsider(candidates: DeferredVisit[]): Promise<number> {
+    let captured = 0
+
+    for (const candidate of candidates) {
+      if (await collectorCanSee(candidate.url, candidate.at)) {
+        continue
+      }
+
+      if (await this.storeVisit(candidate.url, candidate.rule)) {
+        captured += 1
+      }
+    }
+
+    return captured
+  }
+
+  /**
+   * Settle whatever is still held, for a drain.
+   *
+   * The next visit is the ordinary signal, and it arrives milliseconds after a
+   * redirect. This covers the tail: a redirector whose destination never
+   * produced a visit has nothing else coming.
+   */
+  async reconsiderDeferred(): Promise<number> {
+    if (!this.config.enabled) {
+      this.deferredVisits.forgetAll()
+      return 0
+    }
+
+    return this.reconsider(this.deferredVisits.takeAll())
+  }
+
+  /**
+   * Resolve a URL's ids and keep the edge.
+   *
+   * Keyed by visit id, so capturing the same visit twice writes the same record
+   * rather than a duplicate — which is what lets the deferred path and the
+   * direct one overlap without coordinating.
+   */
+  private async storeVisit(url: string, rule: CaptureRule): Promise<boolean> {
+    const visit = await newestVisit(url)
 
     if (visit === null) {
       return false
@@ -182,6 +252,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     this.draining = true
 
     try {
+      // Settle any undecided visit before reading the store, so a hop that never
+      // got a following visit is emitted in this drain rather than the next one.
+      await this.reconsiderDeferred()
+
       // Sweep first, so a record past its age is discarded rather than sent.
       const cutoff = Date.now() - (this.config.max_hop_age_days * 24 * 60 * 60 * 1000)
       await this.hopStore.sweep(cutoff)
@@ -418,6 +492,8 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
    */
   async reconcileStore(): Promise<void> {
     if (!this.config.enabled) {
+      this.deferredVisits.forgetAll()
+
       const discarded = await this.hopStore.clear() + await this.openerStore.clear()
 
       if (discarded > 0) {
