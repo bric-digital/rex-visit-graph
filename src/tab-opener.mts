@@ -106,7 +106,8 @@ export class TabOpenerTracker {
    *
    * The lookup starts here rather than in `tabNavigated()`, which means a new tab
    * the capture rules or lists then exclude has already paid for one it will not
-   * use. That is deliberate, and AI-Extension#124 raised it. Deferring it would
+   * use. That is deliberate. It came up while investigating AI-Extension#124,
+   * which reported the cost of this lookup but not this part of it. Deferring would
    * resolve the opener's NEWEST visit at navigation time instead of at creation
    * time, and on the pages this matters for — a dashboard re-recording a visit
    * every few seconds — those are different visits. The attribution window is 30
