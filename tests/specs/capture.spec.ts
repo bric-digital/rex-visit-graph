@@ -39,7 +39,13 @@ test.describe('rex-visit-graph — real extension', () => {
         // Parking the window off-screen keeps it out of the way of whoever is at
         // the keyboard; it still takes focus briefly on launch.
         '--window-position=-3000,-3000',
-        '--window-size=800,600'
+        '--window-size=800,600',
+        // Gives the local server a name that rex-lists will match. Domain list
+        // matching resolves a registrable domain, and returns null for both
+        // "localhost" and "127.0.0.1" (probed 2026-09-17), so a list cannot name
+        // either one. example.com is IANA-reserved, so the name cannot collide
+        // with anything real.
+        '--host-resolver-rules=MAP dashboard.example.com 127.0.0.1'
       ]
     })
 
@@ -1250,6 +1256,15 @@ test.describe('rex-visit-graph — real extension', () => {
           return
         }
 
+        // Opens a tab on a different host from its own, so a block list can name
+        // the opener without also naming what it opens. Same server either way.
+        if (url.pathname === '/start-cross') {
+          res.writeHead(200, { 'content-type': 'text/html' })
+          res.end('<!doctype html><meta charset="utf-8">'
+            + `<a id="blank" href="http://127.0.0.1:${PORT}/landing-cross" target="_blank">blank</a>`)
+          return
+        }
+
         res.writeHead(200, { 'content-type': 'text/html' })
         res.end(`<!doctype html><meta charset="utf-8"><h1>${url.pathname}</h1>`)
       })
@@ -1326,6 +1341,87 @@ test.describe('rex-visit-graph — real extension', () => {
       expect(result.openers[0].visit_id).toBe(result.landingVisit?.visitId)
       expect(result.openers[0].opener_visit_id).toBe(result.startVisit?.visitId)
       expect(result.openers[0].url).toBe(`${ORIGIN}/landing-blank`)
+    })
+
+    /**
+     * Opens a tab from a page on a DIFFERENT host, so a block list can name the
+     * opener without also naming what it opens.
+     *
+     * Entering through the shared `/start` fixture would not do: opener and
+     * landing are both 127.0.0.1 there, so one block list covers both, and
+     * `tabNavigated()` already refuses a block-listed landing. The edge would be
+     * absent either way and the test would pass with the opener-side check still
+     * missing. Reports the URLs `getVisits()` was called with, because the
+     * complaint in AI-Extension#124 is the cost of that call, not only the edge.
+     */
+    async function openFromBlockedOpener() {
+      await serviceWorker.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const g = self as any
+        g.rexVisitGraphPlugin.updateConfiguration({
+          url_detail: 'full',
+          capture_block_lists: ['vg-opener-block']
+        })
+
+        g.__lookedUp = []
+        g.__realGetVisits = chrome.history.getVisits
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(chrome.history as any).getVisits = (details: { url: string }) => {
+          g.__lookedUp.push(details.url)
+          return g.__realGetVisits.call(chrome.history, details)
+        }
+      })
+
+      const opener = `http://dashboard.example.com:${PORT}/start-cross`
+      const tab = await context.newPage()
+      await tab.goto(opener)
+
+      const opened = context.waitForEvent('page', { timeout: 5000 }).catch(() => null)
+      await tab.click('#blank')
+      const newTab = await opened
+      await (newTab ?? tab).waitForLoadState('load').catch(() => {})
+      await tab.waitForTimeout(1200)
+
+      const result = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const g = self as any
+        ;(chrome.history as any).getVisits = g.__realGetVisits
+        return {
+          openers: await g.rexVisitGraphPlugin.openerStore.readAll(),
+          lookedUp: g.__lookedUp as string[]
+        }
+      })
+
+      await newTab?.close().catch(() => {})
+      await tab.close()
+
+      return { opener, ...result }
+    }
+
+    test('an opener on a block list costs no visit lookup, and records no edge', async () => {
+      await seedList('vg-opener-block', 'example.com')
+
+      const result = await openFromBlockedOpener()
+
+      // The cost is the whole complaint: getVisits returns every visit Chrome
+      // holds for the URL, which is seconds on a heavily reloaded page. The gate
+      // has to sit ahead of it, not merely discard the answer afterwards.
+      expect(result.lookedUp).not.toContain(result.opener)
+      // And the opener's visit id must not reach an emitted point, since a
+      // block-listed site is one the study said not to collect from.
+      expect(result.openers).toHaveLength(0)
+    })
+
+    test('an opener that is not block-listed is still attributed across hosts', async () => {
+      // Premise for the test above: the cross-host walk DOES produce an edge
+      // when nothing blocks it, so the absences there are the block list acting
+      // rather than a fixture that never opened a tab.
+      await seedList('vg-opener-block', 'example.invalid')
+
+      const result = await openFromBlockedOpener()
+
+      expect(result.lookedUp).toContain(result.opener)
+      expect(result.openers).toHaveLength(1)
     })
 
     test('a same-tab link records no opener edge, since Chrome attributes it already', async () => {

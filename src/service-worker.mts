@@ -113,8 +113,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           + 'warning while it is on so a configuration left in this state is visible.',
         max_hop_age_days: 'Number, days after which a hop that was never emitted is discarded.',
         capture_block_lists: ['String, rex-lists list name. A visit matching any of these is not '
-          + 'captured at all. Takes precedence over capture_allow_lists. A list that cannot be read '
-          + 'blocks, so an unreadable list captures less rather than more.'],
+          + 'captured at all, and neither is a page that opens a tab, so an excluded page is never '
+          + 'looked up and its visit id never reaches a point. Takes precedence over '
+          + 'capture_allow_lists. A list that cannot be read blocks, so an unreadable list captures '
+          + 'less rather than more.'],
         capture_allow_lists: ['String, rex-lists list name. When any are named, only visits matching '
           + 'one of them are captured. Decides whether a visit is captured; redaction below decides '
           + 'what a captured address looks like.'],

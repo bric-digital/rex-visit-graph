@@ -185,8 +185,9 @@ export class TabOpenerTracker {
   /**
    * The opener tab's current visit, or null when it has no page worth
    * attributing to: a blank tab, an extension page, a host without the `tabs`
-   * permission (Chrome then reports no URL), or a tab that has already gone.
-   * The URL is used to resolve the id and then dropped.
+   * permission (Chrome then reports no URL), a page the capture lists exclude,
+   * or a tab that has already gone. The URL is used to resolve the id and then
+   * dropped.
    */
   private async resolveOpenerVisit(openerTabId: number): Promise<string | null> {
     let url: string | undefined
@@ -198,6 +199,14 @@ export class TabOpenerTracker {
     }
 
     if (url === undefined || url === '' || this.deps.rules.decide(url) === null) {
+      return null
+    }
+
+    // Ahead of the visit lookup, which is the expensive call: `getVisits()`
+    // returns every visit the URL has ever had, and an opener is exactly the
+    // kind of page that accumulates them. An excluded host should cost nothing
+    // to exclude, and its visit id has no business reaching an emitted point.
+    if (!(await this.deps.lists.permits(url))) {
       return null
     }
 
