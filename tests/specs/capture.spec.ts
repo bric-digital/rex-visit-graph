@@ -1067,6 +1067,50 @@ test.describe('rex-visit-graph — real extension', () => {
     expect(result.captured).toBe(false)
   })
 
+  // The direct path drops a blocked visit from the held set only after two
+  // awaits. A visit that arrives inside that window takes the held set first, and
+  // its second look must refuse the blocked one the same way the direct path
+  // does. This is the shape of a block-listed dashboard that redirects itself:
+  // the redirect commits while the redirector's handler is still waiting.
+  test('a block-listed visit held for a second look is not captured by the next visit, and costs no lookup', async () => {
+    await seedList('vg-block', 'example.com')
+
+    const result = await serviceWorker.evaluate(async ({ blocked, next }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = (self as any).rexVisitGraphPlugin
+      p.updateConfiguration({ enabled: false })
+      await chrome.history.addUrl({ url: next })
+      p.updateConfiguration({ capture_scope: 'hops', capture_block_lists: ['vg-block'] })
+
+      const lookups: string[] = []
+      const realGetVisits = chrome.history.getVisits
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(chrome.history as any).getVisits = (details: { url: string }) => {
+        lookups.push(details.url)
+        return realGetVisits.call(chrome.history, details)
+      }
+
+      try {
+        const at = Date.now()
+        // Not awaited in between: Chrome runs onVisited handlers' synchronous
+        // parts in order, so the second call finds the first still held.
+        const first = p.captureVisit({ url: blocked, title: '', lastVisitTime: at, visitCount: 1, typedCount: 0, id: '1' })
+        const second = p.captureVisit({ url: next, title: '', lastVisitTime: at + 1, visitCount: 1, typedCount: 0, id: '2' })
+        await Promise.all([first, second])
+        await p.reconsiderDeferred()
+        const records = await p.hopStore.readAll()
+        return { urls: records.map((r: { url: string | null }) => r.url), lookups }
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(chrome.history as any).getVisits = realGetVisits
+        p.updateConfiguration({ capture_block_lists: [] })
+      }
+    }, { blocked: 'https://dashboard.example.com/participant/', next: 'https://dashboard.example.com/participant/dashboard/' })
+
+    expect(result.lookups).not.toContain('https://dashboard.example.com/participant/')
+    expect(result.urls).not.toContain('https://dashboard.example.com/participant/')
+  })
+
   test('no capture lists leaves capture exactly as it was', async () => {
     const result = await tryCapture(BLOCKED, {})
 

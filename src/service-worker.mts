@@ -207,6 +207,13 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     let captured = 0
 
     for (const candidate of candidates) {
+      // The same gate the direct path applies, for the same reason. A held
+      // visit can be taken by the next visit before its own handler has reached
+      // that gate, so it has to be asked again here, ahead of the lookup.
+      if (!(await this.captureLists.permits(candidate.url))) {
+        continue
+      }
+
       if (await collectorCanSee(candidate.url, candidate.at)) {
         continue
       }
