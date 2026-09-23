@@ -2,10 +2,10 @@
 
 REX module that records the browser's visit graph, including the visits `chrome.history.search()` omits, so referral chains resolve.
 
-**Current release: `v1.1.0`.** Pin it:
+**Current release: `v1.1.3`.** Pin it:
 
 ```json
-"@bric/rex-visit-graph": "github:bric-digital/rex-visit-graph#v1.1.0"
+"@bric/rex-visit-graph": "github:bric-digital/rex-visit-graph#v1.1.3"
 ```
 
 `package.json` on `main` carries a `-dev` version between releases (`1.1.1-dev` means past 1.1.0, not yet 1.1.1), so the repo never names a release that was not cut. Releases and what the numbers mean: [RELEASING.md](RELEASING.md). 
