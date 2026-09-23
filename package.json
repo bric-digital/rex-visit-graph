@@ -1,6 +1,6 @@
 {
     "name": "@bric/rex-visit-graph",
-    "version": "1.1.3",
+    "version": "1.1.4-dev",
     "description": "REX module that captures the browser visits chrome.history.search() omits, so referrer chains resolve.",
     "keywords": [
         "extension",
