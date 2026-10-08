@@ -51,10 +51,11 @@ export interface VisitGraphConfig {
   /**
    * How much of the captured address to keep and emit.
    *
+   * `path`  — the default. Origin and pathname, no query. Identifies what the
+   *           intermediate WAS (`google.com/goto` vs `google.com/aclk`) without
+   *           carrying the encoded destination a redirector puts in its query
+   *           string, which is the only part likely to hold anything personal.
    * `none`  — ids only. The address is discarded once the visit ids are resolved.
-   * `path`  — origin and pathname, no query. Identifies what the intermediate
-   *           WAS (`google.com/goto` vs `google.com/aclk`) without carrying the
-   *           encoded destination a redirector puts in its query string.
    * `full`  — the whole address.
    */
   url_detail: UrlDetail;

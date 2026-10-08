@@ -341,7 +341,7 @@ test.describe('rex-visit-graph — real extension', () => {
     const result = await serviceWorker.evaluate(async (rules) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = (self as any).rexVisitGraphPlugin
-      // url_detail defaults to 'none', so capture stores no address at all.
+      // Stored with no address, as url_detail 'none' stores them.
       await p.hopStore.record({ visitId: '5', referringVisitId: '4', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, null, rules[0])
       await p.hopStore.record({ visitId: '9', referringVisitId: '8', visitTime: Date.now(), url: 'https://www.google.com/goto?u' }, null, rules[0])
 
@@ -418,7 +418,7 @@ test.describe('rex-visit-graph — real extension', () => {
     })
 
     expect(config.enabled).toBe(true)
-    expect(config.url_detail).toBe('none')
+    expect(config.url_detail).toBe('path')
     expect(config.debug).toBe(false)
     // No rules by default: capture the whole graph, let a study narrow it. Naming
     // sites here would make the module's default a client override, and would
@@ -1793,7 +1793,7 @@ test.describe('rex-visit-graph — real extension', () => {
     })
 
     test("url_detail 'none' holds and emits no address", async () => {
-      const stored = await visitInternalPage('chrome://version/', { schemes: WITH_CHROME })
+      const stored = await visitInternalPage('chrome://version/', { schemes: WITH_CHROME, url_detail: 'none' })
 
       expect(stored).toHaveLength(1)
       expect(stored[0].url).toBeNull()

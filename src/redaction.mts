@@ -1,8 +1,9 @@
 /**
  * Redacts a captured URL using the same rules and precedence rex-history applies.
  *
- * Only relevant when `url_detail` keeps an address. At its default of `none`
- * there is nothing to redact, which is why the module needs no lists to run.
+ * Only relevant when `url_detail` keeps an address. At `none` there is nothing
+ * to redact, and with no lists stated anywhere an address passes unchanged, which
+ * is why the module needs no lists to run.
  *
  * Settings resolve to rex-history's first, so a study that has already decided
  * what may be recorded does not have to state it twice and the two modules cannot

@@ -48,7 +48,7 @@ const DEFAULT_CONFIG: VisitGraphConfig = {
   // judgement, not a finding, which is why it is server config.
   max_opener_visits: 25_000,
   schemes: [...DEFAULT_SCHEMES],
-  url_detail: 'none',
+  url_detail: 'path',
   debug: false,
   max_hop_age_days: 7
 }
@@ -126,10 +126,10 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
           + 'local file path is a different kind of disclosure from a web page. Naming chrome, '
           + 'chrome-untrusted or edge records the browser\'s own pages, which Chrome keeps out of '
           + 'history, as rex-visit-graph-page points with no visit ids. Needs the tabs permission.'],
-        url_detail: "String: 'none' (default), 'path' or 'full'. 'none' keeps ids only and discards the "
-          + "address as soon as the visit ids are resolved. 'path' keeps origin and pathname, which says what "
-          + "an intermediate was without the destination a redirector encodes in its query. 'full' keeps the "
-          + "whole address. Anything kept is redacted before it is emitted, using rex-history's lists when it "
+        url_detail: "String: 'path' (default), 'none' or 'full'. 'path' keeps origin and pathname, which "
+          + "says what an intermediate was without the query string, where a redirector encodes its "
+          + "destination and a page may carry typed text. 'none' keeps ids only and discards the address "
+          + "as soon as the visit ids are resolved. 'full' keeps the whole address. Anything kept is redacted before it is emitted, using rex-history's lists when it "
           + 'states any, otherwise visit_graph.redaction.',
         debug: 'Boolean, forces url_detail to full in any build, for diagnosing a deployment. Logs a '
           + 'warning while it is on so a configuration left in this state is visible.',
@@ -417,11 +417,11 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
   urlDetail(): UrlDetail {
     if (this.config.debug === true) {
       console.warn('[rex-visit-graph] visit_graph.debug is on: emitting full addresses, '
-        + `overriding url_detail="${this.config.url_detail ?? 'none'}".`)
+        + `overriding url_detail="${this.config.url_detail ?? 'path'}".`)
       return 'full'
     }
 
-    return this.config.url_detail ?? 'none'
+    return this.config.url_detail ?? 'path'
   }
 
   /**

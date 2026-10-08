@@ -21,7 +21,7 @@ Chrome stores redirect intermediates but keeps them out of history search result
 - Watches every visit the browser reports and captures the whole graph by default
 - Resolves each one's visit id and referring visit id via `chrome.history.getVisits()`
 - Emits them as `rex-visit-graph-hop` points on its own schedule
-- Sends ids only by default, and discards the address once the ids are resolved, so it holds no addresses at all and depends on no other module
+- Sends ids plus each address's origin and path by default, dropping the query string, and depends on no other module
 
 **Capture rules narrow, they do not enable.** With none configured every visit on a configured scheme is captured; `schemes` decides which those are. A study that wants less states rules to reduce it. That way a redirector nobody has seen yet is captured anyway, instead of going silently uncollected until somebody notices the data is missing — which is the failure this module exists to end.
 
@@ -79,7 +79,7 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 | `enabled` | boolean | No | `true` | Enable/disable the module; see below |
 | `capture_rules` | array | No | `[]` (capture everything) | Optional narrowing filter; see below |
 | `schemes` | array | No | `["http", "https"]` | Schemes to capture, without the colon, matched case-insensitively. Name others (`file`, `ftp`, `webdav`) to opt into them. `chrome`, `chrome-untrusted` and `edge` record internal pages; see below |
-| `url_detail` | string | No | `"none"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
+| `url_detail` | string | No | `"path"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
 | `tab_opener_edges` | boolean | No | `true` | Attribute a new tab's first visit to the page that opened it, as `rex-visit-graph-opener` points. Needs the `tabs` permission in the host |
 | `max_opener_visits` | number | No | `25000` | Ceiling on an opener page's visit count. Above it the page is not looked up, so tabs it opens get no opener edge. `getVisits()` cannot be bounded and costs ~1s on a page that re-records a visit every few seconds, charged per new tab. `0` removes the ceiling |
 | `debug` | boolean | No | `false` | Forces `url_detail` to `"full"` in any build, for diagnosing a deployment |
@@ -102,8 +102,8 @@ Rules are a narrowing filter and are server-side because a study's appetite chan
 
 | Value | Kept and emitted | Answers |
 |-------|------------------|---------|
-| `"none"` (default) | nothing; the address is discarded once the visit ids are resolved | where the path went, via the join to rex-history |
-| `"path"` | origin and pathname, no query | **what the intermediate was** — `google.com/goto` versus `google.com/aclk`, an organic click versus an ad — without the destination a redirector encodes in its query |
+| `"none"` | nothing; the address is discarded once the visit ids are resolved | where the path went, via the join to rex-history |
+| `"path"` (default) | origin and pathname, no query | **what the intermediate was** — `google.com/goto` versus `google.com/aclk`, an organic click versus an ad — without the destination a redirector encodes in its query |
 | `"full"` | the whole address | everything, including that encoded destination |
 
 `"path"` exists because ids alone cannot say what kind of transition a hop was. Under narrowed capture the `capture_rule` field answers that; capturing the whole graph, every hop is `all` and the character of the transition is lost. `"path"` restores it at a fraction of the cost of `"full"`.
@@ -112,7 +112,7 @@ Rules are a narrowing filter and are server-side because a study's appetite chan
 
 ### Redaction, when an address is kept
 
-With ids alone there is nothing to redact, which is why the module needs no lists at its default setting. Any address it does keep is redacted before it is emitted.
+With ids alone there is nothing to redact, and with no lists stated anywhere an address passes unchanged, so the module needs no lists to run. Any address it does keep is redacted before it is emitted.
 
 **Settings resolve to rex-history's if it states any**, so a study that has already decided what may be recorded does not state it twice and the two modules cannot disagree. `visit_graph.redaction` applies only when rex-history states nothing, which is the case for a study running this module without rex-history.
 
@@ -141,7 +141,7 @@ One caveat to weigh before enabling it: a Google hop's own host is `google.com`,
       { "id": "google-url", "host_suffix": "google.com", "path_prefix": "/url" }
     ],
     "schemes": ["http", "https"],
-    "url_detail": "none",
+    "url_detail": "path",
     "debug": false,
     "max_hop_age_days": 7
   }
@@ -158,11 +158,12 @@ One `rex-visit-graph-hop` point per captured visit:
   "referring_visit_id": "4",
   "visit_time": 1788218626270,
   "capture_rule": "google-goto",
-  "date": 1788218626270
+  "date": 1788218626270,
+  "url": "https://www.google.com/goto"
 }
 ```
 
-No URL, title or domain: nothing about where the participant went, only that one visit led to another.
+No title, and no query string: the hop says what kind of intermediate it was and that one visit led to another. `url` is absent under `url_detail: "none"`.
 
 ### Opener edges: the new-tab and new-window break
 
@@ -214,7 +215,7 @@ Chrome never writes its own pages to history: `chrome://version/`, `chrome://set
 
 `visit_time` is when the tab committed the URL, not a history timestamp. There are no ids, so these points do not join to the visit graph: they say which internal page was open, in which tab, and when. `tab_id` is Chrome's id for the tab during that browser session; it groups pages within a tab and does not survive a browser restart.
 
-Capture rules, capture lists, `url_detail`, redaction and `max_hop_age_days` apply as they do to hops. `url_detail` matters more here, since an internal address can hold text the participant typed (`chrome://history/?q=…`): `"path"` keeps `chrome://contextual-tasks/` and drops the query, and `"none"` keeps only the time. Every new tab opens on an internal page, so naming `chrome` also records one point per new tab.
+Capture rules, capture lists, `url_detail`, redaction and `max_hop_age_days` apply as they do to hops. At the default `"path"`, AI Mode is recorded as `chrome://contextual-tasks/`, without the task id; `"none"` keeps only the time. Every new tab opens on an internal page, so naming `chrome` also records one point per new tab.
 
 `file` and `chrome-extension` pages are left to the hop path, because Chrome does record those in history. Like opener edges, this path needs the `tabs` permission.
 
