@@ -26,6 +26,7 @@ import { CaptureLists } from './capture-lists.mjs'
 import { collectorCanSee } from './history-visibility.mjs'
 import { DeferredVisits, type DeferredVisit } from './deferred-visits.mjs'
 import { OpenerStore, TabOpenerTracker, chainRoot } from './tab-opener.mjs'
+import { InternalPageRecorder, PageStore } from './internal-pages.mjs'
 
 /**
  * Scoped by default to the visits rex-history's collector cannot see, and not
@@ -65,6 +66,13 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     store: this.openerStore,
     urlDetail: () => this.urlDetail(),
     maxOpenerVisits: () => this.config.max_opener_visits
+  })
+  readonly pageStore = new PageStore()
+  readonly internalPages = new InternalPageRecorder({
+    rules: this.captureRules,
+    lists: this.captureLists,
+    store: this.pageStore,
+    urlDetail: () => this.urlDetail()
   })
 
   private config: VisitGraphConfig = DEFAULT_CONFIG
@@ -115,7 +123,9 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         }],
         schemes: ['String, a URL scheme to capture, without the colon. Defaults to http and https. '
           + 'Naming others (file, ftp, webdav) opts into them: they are not ordinary browsing, and a '
-          + 'local file path is a different kind of disclosure from a web page.'],
+          + 'local file path is a different kind of disclosure from a web page. Naming chrome, '
+          + 'chrome-untrusted or edge records the browser\'s own pages, which Chrome keeps out of '
+          + 'history, as rex-visit-graph-page points with no visit ids. Needs the tabs permission.'],
         url_detail: "String: 'none' (default), 'path' or 'full'. 'none' keeps ids only and discards the "
           + "address as soon as the visit ids are resolved. 'path' keeps origin and pathname, which says what "
           + "an intermediate was without the destination a redirector encodes in its query. 'full' keeps the "
@@ -202,6 +212,15 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
     return this.storeVisit(item.url, rule)
   }
 
+  /** A tab committed a URL Chrome may keep out of history. */
+  async captureInternalPage(tabId: number, url: string): Promise<boolean> {
+    if (!this.config.enabled) {
+      return false
+    }
+
+    return this.internalPages.pageCommitted(tabId, url)
+  }
+
   /** Capture the ones that have stopped being visible since they were held. */
   private async reconsider(candidates: DeferredVisit[]): Promise<number> {
     let captured = 0
@@ -281,11 +300,14 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       const cutoff = Date.now() - (this.config.max_hop_age_days * 24 * 60 * 60 * 1000)
       await this.hopStore.sweep(cutoff)
       await this.openerStore.sweep(cutoff)
+      await this.pageStore.sweep(cutoff)
 
       const records = await this.hopStore.readAll()
       const openers = await this.openerStore.readAll()
+      const pages = await this.pageStore.readAll()
       const emitted: string[] = []
       const emittedOpeners: string[] = []
+      const emittedPages: string[] = []
 
       for (const record of records) {
         const url = record.url === null ? undefined : await this.redactor.redact(record.url)
@@ -323,6 +345,21 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         emittedOpeners.push(record.visit_id)
       }
 
+      for (const record of pages) {
+        const url = record.url === null ? undefined : await this.redactor.redact(record.url)
+
+        dispatchEvent({
+          name: 'rex-visit-graph-page',
+          visit_time: record.visit_time,
+          tab_id: record.tab_id,
+          capture_rule: record.capture_rule,
+          date: record.visit_time,
+          ...(url === undefined ? {} : { url })
+        })
+
+        emittedPages.push(record.page_id)
+      }
+
       // Emit, then forget. A worker killed between the two re-emits next cycle;
       // killed in the other order, the hop is gone. A duplicate is recoverable
       // in analysis, a loss is not.
@@ -334,7 +371,11 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
         await this.openerStore.forget(emittedOpeners)
       }
 
-      return emitted.length + emittedOpeners.length
+      if (emittedPages.length > 0) {
+        await this.pageStore.forget(emittedPages)
+      }
+
+      return emitted.length + emittedOpeners.length + emittedPages.length
     } catch (error) {
       console.error('[rex-visit-graph] Drain failed:', error)
       return 0
@@ -423,7 +464,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       this.stopListening()
     }
 
-    if (this.config.enabled && this.config.tab_opener_edges) {
+    if (this.config.enabled && (this.config.tab_opener_edges || this.internalPages.isWanted())) {
       this.startListeningForTabs()
     } else {
       this.stopListeningForTabs()
@@ -447,17 +488,24 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
 
     this.tabListeners = {
       created: (tab) => {
-        this.tabOpeners.tabCreated(tab)
+        if (this.config.tab_opener_edges) {
+          this.tabOpeners.tabCreated(tab)
+        }
       },
       updated: (tabId, changeInfo) => {
         // onUpdated fires for every status change of every tab; only a committed
-        // URL on a tab this module is holding is of interest.
+        // URL is of interest, for a tab this module is holding or a page Chrome
+        // keeps out of history.
         if (changeInfo.url === undefined) {
           return
         }
 
         this.tabOpeners.tabNavigated(tabId, changeInfo.url).catch((error) => {
           console.error('[rex-visit-graph] Opener capture failed:', error)
+        })
+
+        this.captureInternalPage(tabId, changeInfo.url).catch((error) => {
+          console.error('[rex-visit-graph] Internal page capture failed:', error)
         })
       },
       removed: (tabId) => {
@@ -516,6 +564,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       this.deferredVisits.forgetAll()
 
       const discarded = await this.hopStore.clear() + await this.openerStore.clear()
+        + await this.pageStore.clear()
 
       if (discarded > 0) {
         console.log(`[rex-visit-graph] Disabled; discarded ${discarded} edge(s) captured before configuration.`)
@@ -530,6 +579,7 @@ class VisitGraphServiceWorkerModule extends REXServiceWorkerModule {
       // on was discarded at capture, which is the point of not holding one.
       const discarded = await this.hopStore.forgetByRule(CAPTURE_ALL.id)
         + await this.openerStore.forgetByRule(CAPTURE_ALL.id)
+        + await this.pageStore.forgetByRule(CAPTURE_ALL.id)
 
       if (discarded > 0) {
         console.log(`[rex-visit-graph] Narrowed by configuration; discarded ${discarded} hop(s) `

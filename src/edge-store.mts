@@ -10,17 +10,20 @@
  * the same visit can both be held.
  */
 
-export interface StoredEdge {
-  visit_id: string;
+export interface StoredRecord {
   visit_time: number;
   capture_rule: string;
 }
 
-export class EdgeStore<T extends StoredEdge> {
-  constructor(private readonly prefix: string) {}
+export interface StoredEdge extends StoredRecord {
+  visit_id: string;
+}
+
+export class EdgeStore<T extends StoredRecord> {
+  constructor(private readonly prefix: string, private readonly idOf: (record: T) => string) {}
 
   async put(record: T): Promise<void> {
-    await chrome.storage.local.set({ [this.keyFor(record.visit_id)]: record })
+    await chrome.storage.local.set({ [this.keyFor(this.idOf(record))]: record })
   }
 
   /**
@@ -40,8 +43,8 @@ export class EdgeStore<T extends StoredEdge> {
     return keys.map((key) => stored[key] as T).filter((record) => record !== undefined)
   }
 
-  async forget(visitIds: string[]): Promise<void> {
-    await chrome.storage.local.remove(visitIds.map((visitId) => this.keyFor(visitId)))
+  async forget(ids: string[]): Promise<void> {
+    await chrome.storage.local.remove(ids.map((id) => this.keyFor(id)))
   }
 
   /** Discard records held under one rule id. Returns how many went. */
@@ -49,7 +52,7 @@ export class EdgeStore<T extends StoredEdge> {
     const matching = (await this.readAll()).filter((record) => record.capture_rule === ruleId)
 
     if (matching.length > 0) {
-      await this.forget(matching.map((record) => record.visit_id))
+      await this.forget(matching.map(this.idOf))
     }
 
     return matching.length
@@ -60,7 +63,7 @@ export class EdgeStore<T extends StoredEdge> {
     const records = await this.readAll()
 
     if (records.length > 0) {
-      await this.forget(records.map((record) => record.visit_id))
+      await this.forget(records.map(this.idOf))
     }
 
     return records.length
@@ -71,13 +74,13 @@ export class EdgeStore<T extends StoredEdge> {
     const stale = (await this.readAll()).filter((record) => record.visit_time < olderThan)
 
     if (stale.length > 0) {
-      await this.forget(stale.map((record) => record.visit_id))
+      await this.forget(stale.map(this.idOf))
     }
 
     return stale.length
   }
 
-  private keyFor(visitId: string): string {
-    return `${this.prefix}${visitId}`
+  private keyFor(id: string): string {
+    return `${this.prefix}${id}`
   }
 }

@@ -19,7 +19,7 @@ export interface HopRecord extends StoredEdge {
 
 export class HopStore extends EdgeStore<HopRecord> {
   constructor() {
-    super(KEY_PREFIX)
+    super(KEY_PREFIX, (record) => record.visit_id)
   }
 
   async record(visit: HopVisit, emittableUrl: string | null, rule: CaptureRule): Promise<void> {

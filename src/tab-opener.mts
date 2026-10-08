@@ -51,7 +51,7 @@ interface PendingOpener {
 
 export class OpenerStore extends EdgeStore<OpenerRecord> {
   constructor() {
-    super(KEY_PREFIX)
+    super(KEY_PREFIX, (record) => record.visit_id)
   }
 }
 

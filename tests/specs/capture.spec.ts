@@ -1691,4 +1691,186 @@ test.describe('rex-visit-graph — real extension', () => {
       expect(remaining).toBe(0)
     })
   })
+
+  // -------------------------------------------------------------------------
+  // Internal pages
+  //
+  // Chrome keeps its own pages (chrome://version, AI Mode's
+  // chrome://contextual-tasks) out of history, so onVisited never fires for
+  // them and no visit id exists. tabs.onUpdated still carries the committed
+  // URL, so these drive a real tab to a real chrome:// page rather than
+  // synthesising the event. AI-Extension#132.
+  // -------------------------------------------------------------------------
+
+  test.describe('internal pages', () => {
+    const WITH_CHROME = ['http', 'https', 'chrome']
+
+    test.beforeEach(async () => {
+      await serviceWorker.evaluate(async () => {
+        const keys = (await chrome.storage.local.getKeys()).filter((key) => key.startsWith('rexVisitGraphPage:'))
+        if (keys.length > 0) await chrome.storage.local.remove(keys)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(self as any).__capturedEvents = []
+      })
+    })
+
+    test.afterAll(async () => {
+      await serviceWorker.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(self as any).rexVisitGraphPlugin.updateConfiguration({})
+      })
+    })
+
+    /** Configure, open a tab on the URL, and report what the module stored. */
+    async function visitInternalPage(url: string, config: Record<string, unknown>) {
+      await serviceWorker.evaluate((config) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(self as any).rexVisitGraphPlugin.updateConfiguration(config)
+      }, config)
+
+      const tab = await context.newPage()
+      await tab.goto(url).catch(() => {})
+      await tab.waitForTimeout(800)
+      await tab.close()
+
+      return serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (self as any).rexVisitGraphPlugin.pageStore.readAll()
+      })
+    }
+
+    async function drainPages() {
+      return serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const g = self as any
+        g.__capturedEvents = []
+        await g.rexVisitGraphPlugin.drain()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return g.__capturedEvents.filter((e: any) => e.name === 'rex-visit-graph-page')
+      })
+    }
+
+    test('a chrome:// page is recorded when the study names the chrome scheme', async () => {
+      const stored = await visitInternalPage('chrome://version/', { schemes: WITH_CHROME, url_detail: 'full' })
+
+      // Premise: Chrome itself recorded nothing, so this record is the only one.
+      const inHistory = await serviceWorker.evaluate(async () =>
+        (await chrome.history.getVisits({ url: 'chrome://version/' })).length)
+      expect(inHistory).toBe(0)
+
+      expect(stored).toHaveLength(1)
+      expect(stored[0].url).toBe('chrome://version/')
+
+      const points = await drainPages()
+      expect(points).toHaveLength(1)
+      expect(points[0].url).toBe('chrome://version/')
+      expect(typeof points[0].visit_time).toBe('number')
+      expect(points[0].date).toBe(points[0].visit_time)
+      expect(typeof points[0].tab_id).toBe('number')
+      // Chrome assigns these pages no visit, so there is no id to emit.
+      expect(points[0].visit_id).toBeUndefined()
+      expect(points[0].referring_visit_id).toBeUndefined()
+
+      const remaining = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (await (self as any).rexVisitGraphPlugin.pageStore.readAll()).length
+      })
+      expect(remaining).toBe(0)
+    })
+
+    test('a chrome:// page is not recorded by default', async () => {
+      const stored = await visitInternalPage('chrome://version/', { url_detail: 'full' })
+
+      expect(stored).toHaveLength(0)
+    })
+
+    test("url_detail 'path' keeps which page it was and drops the query", async () => {
+      // chrome://history/?q= holds text the participant typed.
+      const stored = await visitInternalPage('chrome://history/?q=private-words', { schemes: WITH_CHROME, url_detail: 'path' })
+
+      expect(stored.map((record: { url: string }) => record.url)).toContain('chrome://history/')
+      expect(JSON.stringify(stored)).not.toContain('private-words')
+    })
+
+    test("url_detail 'none' holds and emits no address", async () => {
+      const stored = await visitInternalPage('chrome://version/', { schemes: WITH_CHROME })
+
+      expect(stored).toHaveLength(1)
+      expect(stored[0].url).toBeNull()
+
+      const points = await drainPages()
+      expect(points).toHaveLength(1)
+      expect(points[0].url).toBeUndefined()
+    })
+
+    test('a page Chrome does record in history is left to the history path', async () => {
+      const recorded = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        p.updateConfiguration({ schemes: ['http', 'https', 'chrome', 'file'], url_detail: 'full' })
+        return {
+          web: await p.captureInternalPage(1, 'https://example.com/'),
+          file: await p.captureInternalPage(1, 'file:///tmp/page.html'),
+          stored: (await p.pageStore.readAll()).length
+        }
+      })
+
+      expect(recorded).toEqual({ web: false, file: false, stored: 0 })
+    })
+
+    test('a disabled module records nothing even if captureInternalPage is called directly', async () => {
+      const recorded = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        p.updateConfiguration({ enabled: false, schemes: ['http', 'https', 'chrome'], url_detail: 'full' })
+        const whenDisabled = await p.captureInternalPage(1, 'chrome://version/')
+        p.updateConfiguration({ schemes: ['http', 'https', 'chrome'], url_detail: 'full' })
+        const whenEnabled = await p.captureInternalPage(1, 'chrome://version/')
+        return { whenDisabled, whenEnabled }
+      })
+
+      // Positive control first: the same call does record once enabled.
+      expect(recorded.whenEnabled).toBe(true)
+      expect(recorded.whenDisabled).toBe(false)
+    })
+
+    test('naming the chrome scheme holds a tabs listener without turning on opener edges', async () => {
+      const result = await serviceWorker.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        p.updateConfiguration({ tab_opener_edges: false })
+        const withNeither = p.isListeningForTabs()
+        p.updateConfiguration({ tab_opener_edges: false, schemes: ['http', 'https', 'chrome'] })
+        const withPages = p.isListeningForTabs()
+        // A new tab with an opener would start an opener lookup if this
+        // listener still served opener edges.
+        p.tabListeners.created({ id: 424242, openerTabId: 1 })
+        const reserved = p.tabOpeners.pending.has(424242)
+        p.tabOpeners.forgetAll()
+        p.updateConfiguration({ enabled: false, schemes: ['http', 'https', 'chrome'] })
+        const whenDisabled = p.isListeningForTabs()
+        return { withNeither, withPages, reserved, whenDisabled }
+      })
+
+      expect(result).toEqual({ withNeither: false, withPages: true, reserved: false, whenDisabled: false })
+    })
+
+    test('disabling the module discards stored internal pages too', async () => {
+      const remaining = await serviceWorker.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = (self as any).rexVisitGraphPlugin
+        p.updateConfiguration({ schemes: ['http', 'https', 'chrome'] })
+        await p.captureInternalPage(1, 'chrome://version/')
+        const beforeDisable = (await p.pageStore.readAll()).length
+        await chrome.storage.local.set({ REXConfiguration: { visit_graph: { enabled: false } } })
+        await p.refreshConfiguration()
+        const afterDisable = (await p.pageStore.readAll()).length
+        await chrome.storage.local.set({ REXConfiguration: {} })
+        await p.refreshConfiguration()
+        return { beforeDisable, afterDisable }
+      })
+
+      expect(remaining).toEqual({ beforeDisable: 1, afterDisable: 0 })
+    })
+  })
 })

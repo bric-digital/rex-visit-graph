@@ -142,6 +142,11 @@ export class CaptureRules {
       .map((scheme) => scheme.toLowerCase().replace(/:$/, ''))
   }
 
+  /** True when the study captures this scheme, given without the colon. */
+  capturesScheme(scheme: string): boolean {
+    return this.schemes.includes(scheme)
+  }
+
   /** True when a study has narrowed capture to a stated set of rules. */
   isNarrowed(): boolean {
     return this.rules.length > 0

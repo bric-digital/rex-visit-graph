@@ -42,6 +42,7 @@ Small files, each with one job.
 | `edge-store.mts` | One key per record in `chrome.storage.local`, under a prefix per kind of edge. |
 | `hop-store.mts` | Holds captured hops until they can be emitted. |
 | `tab-opener.mts` | Attributes a new tab's first visit to the page that opened it, from `chrome.tabs`. |
+| `internal-pages.mts` | Records the browser's own pages, which Chrome keeps out of history, from `chrome.tabs`. |
 | `service-worker.mts` | The REX module itself: listeners, configuration, drain, message handling. |
 
 ### The path a hop takes
@@ -77,7 +78,7 @@ The module also declares this shape in code, via `configurationDetails()` in `sr
 |-------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `true` | Enable/disable the module; see below |
 | `capture_rules` | array | No | `[]` (capture everything) | Optional narrowing filter; see below |
-| `schemes` | array | No | `["http", "https"]` | Schemes to capture, without the colon, matched case-insensitively. Name others (`file`, `ftp`, `webdav`) to opt into them |
+| `schemes` | array | No | `["http", "https"]` | Schemes to capture, without the colon, matched case-insensitively. Name others (`file`, `ftp`, `webdav`) to opt into them. `chrome`, `chrome-untrusted` and `edge` record internal pages; see below |
 | `url_detail` | string | No | `"none"` | `"none"`, `"path"` or `"full"`; how much of the address to keep. See below |
 | `tab_opener_edges` | boolean | No | `true` | Attribute a new tab's first visit to the page that opened it, as `rex-visit-graph-opener` points. Needs the `tabs` permission in the host |
 | `max_opener_visits` | number | No | `25000` | Ceiling on an opener page's visit count. Above it the page is not looked up, so tabs it opens get no opener edge. `getVisits()` cannot be bounded and costs ~1s on a page that re-records a visit every few seconds, charged per new tab. `0` removes the ceiling |
@@ -196,6 +197,26 @@ Two further properties analysis should know about:
 
 - **The series starts at install.** `onVisited` sees only live visits, so hops from before the module ships are unrecoverable and a backfill keeps its dangling references.
 - **A hop may arrive twice.** The drain emits before deleting, so a worker killed between the two re-emits next cycle. Deduplicate on `visit_id`.
+
+### Internal pages: the pages Chrome keeps out of history
+
+Chrome never writes its own pages to history: `chrome://version/`, `chrome://settings/`, the new tab page, and AI Mode at `chrome://contextual-tasks/?chrome_task_id=…`. `onVisited` does not fire for them and they have no visit id, so neither rex-history nor the hop path can see them (AI-Extension#132). `tabs.onUpdated` does carry the URL a tab commits, so when a study names `chrome`, `chrome-untrusted` or `edge` in `schemes` (Edge serves its own pages as `edge://`), the module records each one as a `rex-visit-graph-page` point:
+
+```json
+{
+  "visit_time": 1791489600000,
+  "tab_id": 1830512,
+  "capture_rule": "all",
+  "url": "chrome://contextual-tasks/",
+  "date": 1791489600000
+}
+```
+
+`visit_time` is when the tab committed the URL, not a history timestamp. There are no ids, so these points do not join to the visit graph: they say which internal page was open, in which tab, and when. `tab_id` is Chrome's id for the tab during that browser session; it groups pages within a tab and does not survive a browser restart.
+
+Capture rules, capture lists, `url_detail`, redaction and `max_hop_age_days` apply as they do to hops. `url_detail` matters more here, since an internal address can hold text the participant typed (`chrome://history/?q=…`): `"path"` keeps `chrome://contextual-tasks/` and drops the query, and `"none"` keeps only the time. Every new tab opens on an internal page, so naming `chrome` also records one point per new tab.
+
+`file` and `chrome-extension` pages are left to the hop path, because Chrome does record those in history. Like opener edges, this path needs the `tabs` permission.
 
 ## Installation
 
